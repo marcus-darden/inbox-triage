@@ -62,7 +62,7 @@ bin/deploy           # copies config, rules, prompts and shortcuts to iCloud Dri
 
 ## 5. Install on the iPhone
 
-1. In **Files > iCloud Drive > Shortcuts > EmailTriage**, open and **Add** in this order: **InboxTriage Token**, **InboxTriage Engine**, **InboxTriage**. Delete old copies first, so the names stay exact. A copy imported as "… 2" breaks Run Shortcut.
+1. In **Files > iCloud Drive > Shortcuts > EmailTriage** (or from the unzipped `InboxTriage-0.1.0.zip` on the [Releases](https://github.com/marcus-darden/inbox-triage/releases) page), open and **Add** in this order: **InboxTriage Token**, **InboxTriage Engine**, **InboxTriage**. Delete old copies first, so the names stay exact. A copy imported as "… 2" breaks Run Shortcut.
 2. Run **InboxTriage** from its tile (not the editor) and grant every prompt: folder access for `.config/inbox-triage` and the Gmail sites. If the secrets alert appears, open the shortcut in the Mac Shortcuts app and pick the `.config/inbox-triage` folder in the first Get File action (Cmd+Shift+. shows hidden folders).
 3. Check the dry-run report note. Mark mistakes, share the note to InboxTriage, then run `bin/learn` on the Mac.
 4. **Automation:** Shortcuts > Automation > Time of Day (e.g. 7:00 and 18:00) > Run Immediately > *Run Shortcut* **InboxTriage** with the input `default`.

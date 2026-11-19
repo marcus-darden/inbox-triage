@@ -97,7 +97,7 @@ Short version (full steps in [docs/SETUP.md](docs/SETUP.md)):
 2. On a Mac, run `bin/gmail-auth`. It signs you in, prints the refresh token, and creates the `AutoTriage` and `AutoTriage/Kept` labels. Put the three secrets in `iCloud Drive/.config/inbox-triage/secrets.json`.
 3. Optionally, copy `icloud/config.example.json` and `icloud/rules.example.json` to `local/` and edit them. `local/` is gitignored.
 4. Run `bin/build-shortcut` (generate and sign) and `bin/deploy` (copy to iCloud Drive).
-5. On the iPhone, import in this order: **InboxTriage Token**, **InboxTriage Engine**, **InboxTriage**. Run it once and grant the access prompts.
+5. On the iPhone, import in this order: **InboxTriage Token**, **InboxTriage Engine**, **InboxTriage**. Use the files `bin/deploy` put in iCloud Drive, or the signed `InboxTriage-0.1.0.zip` from [Releases](https://github.com/marcus-darden/inbox-triage/releases). Run it once and grant the access prompts.
 6. Add a Time of Day automation: *Run Shortcut* **InboxTriage** with the input `default`.
 
 Requirements: iPhone with Apple Intelligence (iOS 26+), a Gmail account, a Mac (to generate and sign), and optionally [Locally AI](https://locallyai.app) for rule proposals.
