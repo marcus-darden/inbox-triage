@@ -35,7 +35,7 @@ They call each other with **Run Shortcut** by name, so they must be imported wit
 A report note shared to InboxTriage arrives as text. Each line tagged `x?<hint>)` is parsed with regular expressions (`bin/build-shortcut`, tested in `tests/test_patterns.py`):
 
 1. Record the correction in `feedback/pending.tsv` (date, note, id, original, corrected, line).
-2. Ask **Locally AI** (Ternary Bonsai 2 9B, a local model) for proposed sender and content rules, given the corrections, your hints and the current `rules.json`. The reply is shape-checked with patterns only and saved to `feedback/proposed-rules.json`. It is never applied.
+2. Ask **Locally AI** (Ternary Bonsai 2 9B, a local model) for proposed sender and content rules, given the corrections, your hints and the current `rules.json`. The reply is shape-checked with patterns only and saved to `feedback/proposed-rules.txt`. It is never applied.
 3. Run the Engine on just those ids with the decisions you chose.
 4. Mark them in `feedback/applied.txt`, so sharing the same note again does nothing.
 
@@ -50,7 +50,7 @@ iCloud Drive/
     InboxTriage*.shortcut                    signed builds to import
     config.json  rules.json  prompts/*.txt   read at run time
     log/last-run.txt  log/last-report.txt    last run only
-    feedback/pending.tsv  applied.txt  proposed-rules.json
+    feedback/pending.tsv  applied.txt  proposed-rules.txt
 ```
 
 ## The generator

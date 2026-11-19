@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-11-19)
+
+- Fix: feedback runs ignored the corrected decisions. The forced-decision lookup's pattern contains the message id, and the id had ended up in the replacement text instead of the Find pattern. A test now runs the generated lookup.
+- Notes no longer show the title twice: the title comes from Create Note's name only.
+- The model's rule proposals are saved as `feedback/proposed-rules.txt` (iOS saves text as .txt).
+
 ## 0.1.0 (2026-11-19)
 
 First public release.

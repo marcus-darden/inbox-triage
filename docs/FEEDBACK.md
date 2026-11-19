@@ -38,7 +38,7 @@ Why typed codes and not checkboxes? Notes' checklist items can be written from S
 In Notes: **Share > InboxTriage**. For each tagged line, the shortcut:
 
 1. records the correction in `feedback/pending.tsv`;
-2. sends all corrections (sender address, item, original and new decision, your hint) and the current `rules.json` to **Locally AI**, asking for proposed sender and content rules with a one-line reason each. The reply goes to `feedback/proposed-rules.json` and into the "feedback applied" note. It is never applied, and an unparseable reply is shown raw;
+2. sends all corrections (sender address, item, original and new decision, your hint) and the current `rules.json` to **Locally AI**, asking for proposed sender and content rules with a one-line reason each. The reply goes to `feedback/proposed-rules.txt` and into the "feedback applied" note. It is never applied, and an unparseable reply is shown raw;
 3. runs the Engine on exactly those messages with your decisions;
 4. records them in `feedback/applied.txt`, so sharing the same note again changes nothing.
 

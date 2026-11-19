@@ -146,3 +146,27 @@ def test_menu_skipped_for_the_automation(shortcuts):
     first_menu = next(i for i, a in enumerate(acts) if a["WFWorkflowActionIdentifier"].endswith("choosefrommenu"))
     assert any(a["WFWorkflowActionParameters"].get("WFConditionalActionString") == "default"
                for a in acts[:first_menu])
+
+
+def test_forced_decision_lookup_works(shortcuts):
+    """Feedback runs look up 'id=ACTION level' in a force string with a pattern that contains the id.
+
+    The pattern must be the Find text (a token string with the id variable in it), not the replacement:
+    that mistake once turned every forced decision into garbage.
+    """
+    import re
+
+    engine = actions_of(shortcuts, "InboxTriage Engine")
+    finds = [a["WFWorkflowActionParameters"]["WFReplaceTextFind"] for a in engine
+             if a["WFWorkflowActionIdentifier"].endswith("text.replace")
+             and isinstance(a["WFWorkflowActionParameters"].get("WFReplaceTextFind"), dict)]
+    assert len(finds) == 1
+    token = finds[0]["Value"]
+    (ref,) = token["attachmentsByRange"].values()
+    assert ref["VariableName"] == "MsgId"
+    force = "aaa111=DELETE;bbb222=SUMMARIZE moderate;ccc333=KEEP;"
+    for msg_id, want in [("aaa111", "DELETE"), ("bbb222", "SUMMARIZE moderate"), ("ccc333", "KEEP")]:
+        pattern = token["string"].replace("￼", msg_id)
+        assert re.sub(pattern, r"\1", force, count=1) == want
+    pattern = token["string"].replace("￼", "zzz999")
+    assert re.sub(pattern, r"\1", force, count=1) == force  # not forced: unchanged, the shortcut checks this

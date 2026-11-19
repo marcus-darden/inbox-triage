@@ -27,7 +27,7 @@ RULES = os.path.join(REPO, "local", "rules.json")  # personal, gitignored
 RULES_EXAMPLE = os.path.join(REPO, "icloud", "rules.example.json")
 ICLOUD = os.path.expanduser("~/Library/Mobile Documents")
 PENDING = os.path.join(ICLOUD, "iCloud~is~workflow~my~workflows/Documents/EmailTriage/feedback/pending.tsv")
-PROPOSED = os.path.join(ICLOUD, "iCloud~is~workflow~my~workflows/Documents/EmailTriage/feedback/proposed-rules.json")
+PROPOSED = os.path.join(ICLOUD, "iCloud~is~workflow~my~workflows/Documents/EmailTriage/feedback/proposed-rules.txt")
 SECRETS = os.path.join(ICLOUD, "com~apple~CloudDocs/.config/inbox-triage/secrets.json")
 GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 
@@ -126,7 +126,7 @@ def main():
             print(f"  {addr or '?'}: {o} -> {c} | {line[:100]}")
 
     if os.path.exists(PROPOSED):
-        print("\nThe on-device model's proposals from the last Apply feedback (feedback/proposed-rules.json),")
+        print("\nThe on-device model's proposals from the last Apply feedback (feedback/proposed-rules.txt),")
         print("for comparison. These are suggestions only; --apply uses the diff above, not this file:")
         print(read_icloud(PROPOSED).strip() or "(empty)")
 

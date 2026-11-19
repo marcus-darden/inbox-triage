@@ -50,6 +50,9 @@ FEEDBACK_ID_RE = r"^[\s\S]*id:(\S+)[\s\S]*$"
 FEEDBACK_ORIGINAL_RE = r"^[\s\S]* · ([A-Z]+)(?:·[a-z]+)? · [\s\S]*$"
 FEEDBACK_ITEM_RE = r"^[^)]*\)\s*([\s\S]*?) · [A-Z][\s\S]*$"
 FROM_HEADER_RE = r'^[\s\S]*?"name":\s*"From",\s*"value":\s*"((?:[^"\\]|\\.)*)"[\s\S]*$'
+# Feedback runs pass force = "id=ACTION level;id=ACTION;..."; the message id sits between these two parts.
+FORCE_PREFIX = r"^(?:[\s\S]*;)?"
+FORCE_SUFFIX = r"=([^;]*)[\s\S]*$"
 FEEDBACK_HINT_RE = "(?i)" + LEAD + r"x[kadlmhcur](?:\s+([^)]*?))?\s*\)[\s\S]*$"
 
 
@@ -176,7 +179,9 @@ def replace(ref, find, *replacement):
 
 
 def regex_replace(ref, pattern, *replacement):
-    return add("text.replace", {"WFInput": text(ref), "WFReplaceTextFind": pattern,
+    """pattern: a string, or a tuple of parts (strings and refs) when the pattern contains a variable."""
+    find = text(*pattern) if isinstance(pattern, tuple) else pattern
+    return add("text.replace", {"WFInput": text(ref), "WFReplaceTextFind": find,
                                 "WFReplaceTextReplace": text(*replacement),
                                 "WFReplaceTextRegularExpression": True}, "Updated Text")
 
@@ -541,7 +546,7 @@ def build_engine():
 
     comment("Feedback runs force a decision per message id: force is 'id=ACTION level;id=ACTION;...'.")
     set_text("Forced", "no")
-    set_text("ForceRaw", out(regex_replace(var("Force"), "^(?:[\\s\\S]*;)?", var("MsgId"), "=([^;]*)[\\s\\S]*$", "$1")))
+    set_text("ForceRaw", out(regex_replace(var("Force"), (FORCE_PREFIX, var("MsgId"), FORCE_SUFFIX), "$1")))
     fb = if_has_value(as_text("Force"))
     c = if_text_var(as_text("ForceRaw"), IS_NOT, var("Force"))
     set_text("Forced", "yes")
@@ -889,13 +894,13 @@ def build_engine():
     for i, d in enumerate(DECISIONS):
         count_parts += [("" if i == 0 else ", ") + d.lower() + " ", out(counts[d])]
     set_text("Counts", *count_parts)
-    md = ["# ", var("Title"), "\n\n", var("Counts"), "\n\nBypassed: ", var("Bypassed"),
+    md = [var("Counts"), "\n\nBypassed: ", var("Bypassed"),
           " kept messages still in the inbox (label AutoTriage/Kept).\n\n", FEEDBACK_HELP, "\n\n"]
     for v, _, _ in SECTIONS:
         md += ["## ", var("H_" + v), "\n\n", var("T_" + v), "\n\n"]  # items are separated by blank lines
     report = text_action(*md)
     comment("Fallback copy of the report, in case the note can't be created.")
-    save_file(out(report), "EmailTriage/log/last-report.txt")
+    save_file(out(text_action("# ", var("Title"), "\n\n", out(report))), "EmailTriage/log/last-report.txt")
     add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
                                                    "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
     add("notification", {"WFNotificationActionTitle": text("Inbox Triage"),
@@ -1001,8 +1006,8 @@ def finish_feedback():
     c3.end()
     c2.end()
     c2 = if_text(as_text("Parsed"), IS, "yes")
-    save_file(out(text_action(var("Json"))), "EmailTriage/feedback/proposed-rules.json")
-    set_text("Proposals", "Saved to feedback/proposed-rules.json. Nothing is applied until you approve "
+    save_file(out(text_action(var("Json"))), "EmailTriage/feedback/proposed-rules.txt")
+    set_text("Proposals", "Saved to feedback/proposed-rules.txt. Nothing is applied until you approve "
              "(bin/learn on the Mac).\n\n", var("Json"))
     c2.otherwise()
     set_text("Proposals", "Model output unparseable, so there are no proposals. The corrections above were "
@@ -1021,7 +1026,7 @@ def finish_feedback():
     c.end()
     c = if_has_value(as_text("Done"))
     set_text("Title", "Inbox Triage feedback applied, ", var("NoteTime"))
-    report = text_action("# ", var("Title"), "\n\nFrom: ", var("Source"), "\n\n", var("Done"),
+    report = text_action("From: ", var("Source"), "\n\n", var("Done"),
                          "\n\n## Proposed rule changes (need your OK)\n\n", var("Proposals"))
     add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
                                                    "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
@@ -1134,7 +1139,7 @@ def build_front():
     set_text("KeptText", "No kept messages in the inbox.")
     c.end()
     set_text("Title", "Inbox Triage Kept, ", var("NoteTime"))
-    report = text_action("# ", var("Title"), "\n\n", FEEDBACK_HELP, "\n\n", var("KeptText"))
+    report = text_action(FEEDBACK_HELP, "\n\n", var("KeptText"))
     add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
                                                    "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
     b.end()
