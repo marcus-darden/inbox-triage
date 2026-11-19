@@ -11,8 +11,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        # macOS ships Python 3.9 (the code targets it, see pyproject.toml); 3.9 isn't on current Ubuntu runners.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
