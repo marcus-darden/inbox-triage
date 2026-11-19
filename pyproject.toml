@@ -8,7 +8,7 @@ license = "MIT"
 [tool.ruff]
 line-length = 120
 target-version = "py39"
-extend-include = ["bin/build-shortcut", "bin/gmail-auth", "bin/learn", "bin/triage-table"]
+extend-include = ["bin/build-demo", "bin/build-shortcut", "bin/gmail-auth", "bin/learn", "bin/triage-table"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "UP", "I", "SIM"]

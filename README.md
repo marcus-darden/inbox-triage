@@ -110,6 +110,7 @@ bin/deploy           copies config, rules, prompts and shortcuts to iCloud Drive
 bin/gmail-auth       one-time OAuth sign-in (loopback + PKCE), creates the Gmail labels
 bin/learn            proposes rules.json changes from your feedback; --apply after approval
 bin/triage-table     prints the last run as a Markdown table
+bin/build-demo       builds InboxTriage Demo: three Notes with made-up messages, for screenshots
 icloud/              example config, example rules, and the prompts the model reads
 tests/               pytest: plist invariants, regex patterns, bin/learn
 docs/                architecture, setup, feedback, lessons learned, and the OAuth home and privacy pages

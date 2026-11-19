@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Build the 'InboxTriage Demo' shortcut: three Apple Notes with made-up messages, for screenshots.
+
+It uses the Engine's own Create Note action and report format, makes no Gmail calls and reads no
+secrets. Usage: bin/build-demo   (writes and signs build/InboxTriage Demo.shortcut)
+Don't share the demo notes to InboxTriage: their message ids are made up.
+"""
+import importlib.machinery
+import importlib.util
+import os
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+loader = importlib.machinery.SourceFileLoader("builder", os.path.join(REPO, "bin", "build-shortcut"))
+spec = importlib.util.spec_from_loader("builder", loader)
+b = importlib.util.module_from_spec(spec)
+loader.exec_module(b)
+
+
+
+
+def line(sender, subject, decision, op, src, n, tag=""):
+    """One report line in the Engine's format, with its links."""
+    msg_id = f"18f3c2a9e0b4d7{n:02x}"
+    return (f"{tag}{sender} — {subject} · {decision} · {op} · {src} · id:{msg_id}\n"
+            f"[Open in Mail](message://%3Cdemo{n}%40example.com%3E) · "
+            f"[Gmail web](https://mail.google.com/mail/u/0/#all/{msg_id})\n")
+
+# (section, sender, subject, decision, op, src, summary) in the Engine's report format; all made up.
+MESSAGES = [
+    ("Needs you", "A student (example.edu)", "Letter of recommendation for summer program",
+     "KEEP", "keep", "rule", None),
+    ("Would keep", "Dept. Office", "Faculty meeting moved to Friday noon", "KEEP", "keep", "model", None),
+    ("Would archive", "Shop Receipts", "Your order has shipped", "ARCHIVE", "archive", "model", None),
+    ("Would archive", "Bank Alerts", "Your monthly statement is ready", "ARCHIVE", "archive", "model", None),
+    ("Would summarize: High", "Department Chair", "Call for teaching award nominations",
+     "SUMMARIZE·high", "archive", "rule",
+     "Nominations close Dec 5. Short form plus two letters; the committee meets the following week."),
+    ("Would summarize: Low", "Airline Deals", "Fly south this winter from $79", "SUMMARIZE·low", "archive",
+     "rule", "- Winter fares from $79 on select routes, book by Sunday."),
+    ("Would summarize: Confirmations", "Meeting Service", "Your recording is ready",
+     "SUMMARIZE·confirmations", "archive", "rule", "Recording of Tuesday's lecture is ready to view."),
+    ("Would unsubscribe", "Brand Store", "Black Friday starts now", "UNSUBSCRIBE", "keep", "rule", None),
+]
+TAGS = {5: "xd) ", 1: "xm regular work business) "}
+
+
+def report(tagged=False):
+    parts = ["DRY RUN: nothing was changed in Gmail. This shows what would happen. "
+             "Would: keep 2, archive 2, delete 0, unsubscribe 1, summarize 3", "",
+             "Bypassed: 4 kept messages still in the inbox (label AutoTriage/Kept).", "", b.FEEDBACK_HELP, ""]
+    section = None
+    for n, (sec, sender, subject, decision, op, src, summary) in enumerate(MESSAGES):
+        if tagged and n not in TAGS:
+            continue
+        if sec != section:
+            parts += [f"## {sec}", ""]
+            section = sec
+        parts.append(line(sender, subject, decision, op, src, n, TAGS.get(n, "") if tagged else "")
+                     + (summary + "\n" if summary else ""))
+    return "\n".join(parts)
+
+
+applied = "\n".join([
+    "From: Inbox Triage DEMO, Thu Nov 19 7:00 AM (dry run, tagged)", "",
+    "✓ DELETE ← Airline Deals — Fly south this winter from $79 · SUMMARIZE·low · archive · rule · "
+    "id:18f3c2a9e0b4d705",
+    "✓ SUMMARIZE moderate ← Dept. Office — Faculty meeting moved to Friday noon · KEEP · keep · model · "
+    "id:18f3c2a9e0b4d701",
+    "", "## Proposed rule changes (need your OK)", "",
+    "Model: Locally AI, Ternary Bonsai 2 (9B), 7:04:10 AM to 7:04:31 AM.", "",
+    "Saved to feedback/proposed-rules.txt. Nothing is applied until you approve (bin/learn on the Mac).", "",
+    '{"sender_rules": [{"from": "deals@airline.example", "action": "DELETE", '
+    '"reason": "not interested in fare sales"}, {"from": "office@department.example.edu", '
+    '"subject": "Faculty meeting", "action": "SUMMARIZE", "level": "moderate", '
+    '"reason": "regular work business"}], "content_rules": []}',
+])
+b.comment("InboxTriage Demo: creates three notes with made-up messages, for screenshots. No Gmail access.")
+for title, body in [("Inbox Triage DEMO, Thu Nov 19 7:00 AM (dry run)", report()),
+                    ("Inbox Triage DEMO, Thu Nov 19 7:00 AM (dry run, tagged)", report(tagged=True)),
+                    ("Inbox Triage feedback applied DEMO, Thu Nov 19 7:04 AM", applied)]:
+    b.add("com.apple.mobilenotes.SharingExtension", {"name": title, "WFCreateNoteInput": b.text(body),
+                                                     "interpretAsMarkdown": True, "OpenWhenRun": False}, "Note")
+b.add("alert", {"WFAlertActionTitle": "Inbox Triage Demo", "WFAlertActionCancelButtonShown": False,
+                "WFAlertActionMessage": "Created 3 demo notes in Notes (made-up messages). Delete them when done."})
+os.makedirs(b.BUILD, exist_ok=True)
+b.write_shortcut("InboxTriage Demo")
