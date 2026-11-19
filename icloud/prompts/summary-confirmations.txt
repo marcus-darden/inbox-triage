@@ -1,0 +1,2 @@
+If this email is only a notification, confirmation or receipt (something is ready, scheduled, received, shipped or paid), summarize it in ONE line of at most 15 words: what was confirmed or is ready, and any date. No other text.
+If it contains anything more, such as a request, a question, new information they should read, or something they must do, reply with exactly the word HIGH and nothing else.

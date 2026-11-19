@@ -1,0 +1,18 @@
+[project]
+name = "inbox-triage"
+version = "0.1.0"
+description = "An iPhone Shortcut that triages a Gmail inbox with Apple's on-device model, generated from Python."
+requires-python = ">=3.9"
+license = "MIT"
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+extend-include = ["bin/build-shortcut", "bin/gmail-auth", "bin/learn", "bin/triage-table"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "I", "SIM"]
+ignore = ["SIM108"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

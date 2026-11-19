@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""One-time Gmail sign-in for the Inbox Triage shortcut.
+
+Runs a loopback OAuth flow for a Google "Desktop app" client with the
+gmail.modify scope. Prints the refresh token to the terminal only, never to
+disk. Also creates the "AutoTriage" and "AutoTriage/Kept" Gmail labels if they
+are missing and writes their ids into local/config.json (gitignored).
+
+Usage: bin/gmail-auth            (prompts for client id and secret)
+       GMAIL_CLIENT_ID=... GMAIL_CLIENT_SECRET=... bin/gmail-auth
+"""
+import base64
+import getpass
+import hashlib
+import http.server
+import json
+import os
+import secrets
+import sys
+import threading
+import urllib.parse
+import urllib.request
+import webbrowser
+
+SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+LABELS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/labels"
+LABELS = {"auditLabelId": "AutoTriage", "keptLabelId": "AutoTriage/Kept"}
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG = os.path.join(REPO, "local", "config.json")  # personal, gitignored
+CONFIG_EXAMPLE = os.path.join(REPO, "icloud", "config.example.json")
+
+
+def post_form(url, fields):
+    data = urllib.parse.urlencode(fields).encode()
+    with urllib.request.urlopen(urllib.request.Request(url, data=data)) as r:
+        return json.load(r)
+
+
+def gmail(url, token, body=None):
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    if body is not None:
+        req.data = json.dumps(body).encode()
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise GmailError(e.code, e.read().decode(errors="replace")) from e
+
+
+class GmailError(Exception):
+    """A Gmail API error, with Google's message, reason and any activation URL."""
+
+    def __init__(self, status, raw):
+        lines = [f"Gmail API error {status}"]
+        try:
+            err = json.loads(raw)["error"]
+            lines.append(f"  message: {err.get('message')}")
+            lines.append(f"  status:  {err.get('status')}")
+            for e in err.get("errors", []):
+                lines.append(f"  reason:  {e.get('reason')}")
+            for d in err.get("details", []):
+                if d.get("reason"):
+                    lines.append(f"  reason:  {d['reason']}")
+                url = (d.get("metadata") or {}).get("activationUrl")
+                if url:
+                    lines.append(f"  enable the API here: {url}")
+        except (ValueError, KeyError, TypeError, AttributeError):
+            lines.append("  " + raw[:500])
+        super().__init__("\n".join(lines))
+
+
+def parse_redirect(url):
+    """Return the query parameters of a redirect URL as a flat dict."""
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(url.strip()).query)
+    return {k: v[0] for k, v in q.items()}
+
+
+def get_code(client_id, challenge):
+    """Open the consent page and wait for the redirect with ?code=.
+
+    Two ways in, whichever comes first: the browser hits the local listener, or
+    the user pastes the redirect URL. Pasting is needed when the script runs over
+    ssh, because the browser's 127.0.0.1 is then a different machine.
+    """
+    result = {}
+    done = threading.Event()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = 10  # a browser preconnect that never sends a request can't block the server
+
+        def do_GET(self):
+            params = parse_redirect(self.path)
+            if "code" not in params and "error" not in params:
+                self.send_error(404)  # favicon and other stray requests
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Done. You can close this tab and go back to the terminal.")
+            if not done.is_set():
+                result.update(params)
+                done.set()
+
+        def log_message(self, *args):
+            pass
+
+    def read_pasted_url():
+        for line in sys.stdin:
+            params = parse_redirect(line)
+            if "code" in params or "error" in params:
+                if not done.is_set():
+                    result.update(params)
+                    done.set()
+                return
+            if line.strip():
+                print("That URL has no code= in it. Paste the full address-bar URL.")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    redirect = f"http://127.0.0.1:{server.server_port}"
+    state = secrets.token_urlsafe(16)
+    url = AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect,
+        "response_type": "code",
+        "scope": SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    })
+    print("Open this URL in a browser and approve access:\n\n" + url + "\n")
+    print(f"Listening for the redirect on {redirect} (this machine only).")
+    print("If the browser shows 'can't connect' after approving (for example because this")
+    print("script runs over ssh), copy the full URL from its address bar and paste it here.\n")
+    if not os.environ.get("SSH_CONNECTION"):
+        webbrowser.open(url)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=read_pasted_url, daemon=True).start()
+    if not done.wait(600):
+        sys.exit("Timed out after 10 minutes without a redirect.")
+    server.shutdown()
+    server.server_close()
+    if result.get("state") != state:
+        sys.exit("Sign-in failed: state mismatch.")
+    if "code" not in result:
+        sys.exit("Sign-in failed: " + result.get("error", "no code returned"))
+    return result["code"], redirect
+
+
+def ensure_label(token, name):
+    labels = gmail(LABELS_URL, token).get("labels", [])
+    for label in labels:
+        if label["name"] == name:
+            return label["id"], False
+    created = gmail(LABELS_URL, token, {
+        "name": name,
+        "labelListVisibility": "labelShow",
+        "messageListVisibility": "show",
+    })
+    return created["id"], True
+
+
+def main():
+    client_id = os.environ.get("GMAIL_CLIENT_ID") or input("OAuth client ID: ").strip()
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET") or getpass.getpass("OAuth client secret: ").strip()
+
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    code, redirect = get_code(client_id, challenge)
+
+    tokens = post_form(TOKEN_URL, {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect,
+        "grant_type": "authorization_code",
+        "code_verifier": verifier,
+    })
+    refresh = tokens.get("refresh_token")
+    if not refresh:
+        sys.exit("Google returned no refresh token. Remove the app's access at "
+                 "https://myaccount.google.com/permissions and run this again.")
+
+    # Print the secrets first, so a later Gmail error can't lose the refresh token.
+    print("\nPut these three values into iCloud Drive/.config/inbox-triage/secrets.json as")
+    print('{"CLIENT_ID": "...", "CLIENT_SECRET": "...", "REFRESH_TOKEN": "..."}.')
+    print("Keep the refresh token secret: it gives read and modify access to this mailbox.\n")
+    print(f"Client ID:     {client_id}")
+    print(f"Client secret: {client_secret}")
+    print(f"Refresh token: {refresh}\n")
+
+    ids = {}
+    try:
+        for key, name in LABELS.items():
+            ids[key], created = ensure_label(tokens["access_token"], name)
+            print(f'Label "{name}": {ids[key]} ({"created" if created else "already existed"}).')
+    except GmailError as e:
+        print(e)
+        print('\nThe refresh token above is still valid. Fix the error (if it says the API is disabled,\n'
+              'enable the Gmail API in the Cloud project and wait a minute), then rerun bin/gmail-auth,\n'
+              'or create the labels AutoTriage and AutoTriage/Kept in Gmail by hand and put their ids\n'
+              'in local/config.json as auditLabelId and keptLabelId.')
+        sys.exit(1)
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    with open(CONFIG if os.path.exists(CONFIG) else CONFIG_EXAMPLE) as f:
+        config = json.load(f)
+    config.update(ids)
+    with open(CONFIG, "w") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+    print(f"Wrote the label ids to {CONFIG} (gitignored). Run bin/deploy.")
+
+if __name__ == "__main__":
+    main()

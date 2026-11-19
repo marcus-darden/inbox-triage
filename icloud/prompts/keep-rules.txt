@@ -1,0 +1,7 @@
+Rules:
+1. Never choose DELETE for mail from an individual person, or for receipts, invoices, banking, tax, insurance, medical, legal, school, work or government mail, travel bookings or account security alerts. ARCHIVE is the most you may choose for these.
+2. Treat sign-in codes, verification links and password resets older than one day as ARCHIVE.
+3. If the message is from a person (a human writing to the user directly, see above) and they may still need to reply or act, choose KEEP. UNREAD alone is not a reason to KEEP.
+4. Mail is never from a person when the part of the sender address before @ is noreply, no-reply, donotreply, notifications, notify, alerts, updates, marketing, info, hello, news, newsletter or digest (for example notifications@example.com), even if a human name is shown.
+5. Always KEEP mail from these senders or about these topics (one per line, add more below):
+- (add senders or topics here)

@@ -1,0 +1,16 @@
+{
+  "dryRun": "true",
+  "allowDelete": "false",
+  "allowUnsubscribe": "false",
+  "minConfidence": 0.8,
+  "maxMessages": 25,
+  "ignoreHours": 24,
+  "query": "in:inbox -is:starred",
+  "auditLabelId": "",
+  "keptLabelId": "",
+  "feedbackModel": "locally",
+  "locallyModel": {
+    "identifier": "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
+    "title": "Ternary Bonsai 2 (9B)"
+  }
+}

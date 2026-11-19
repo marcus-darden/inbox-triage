@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Print a run log as a markdown table: # | Decision | Level | Flag | Conf | Op | Sender | Subject | Reason | Note.
+
+Usage: bin/triage-table            (log/last-run.txt in iCloud Drive/Shortcuts/EmailTriage)
+       bin/triage-table FILE
+Rows are sorted ARCHIVE, KEEP, DELETE, UNSUBSCRIBE, SUMMARIZE. Columns are read from the header,
+so older logs (without level, op, note) also work. Sender shows the display name only, never the address.
+"""
+import os
+import re
+import subprocess
+import sys
+import time
+
+LOG_DIR = os.path.expanduser(
+    "~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/EmailTriage/log")
+ORDER = {"ARCHIVE": 0, "KEEP": 1, "DELETE": 2, "UNSUBSCRIBE": 3, "SUMMARIZE": 4}
+
+
+def read(path):
+    # iCloud files may be cloud-only on this Mac; ask for a download and retry briefly.
+    subprocess.run(["brctl", "download", path], capture_output=True)
+    for _ in range(10):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            time.sleep(1)
+    sys.exit(f"Couldn't read {path} (not downloaded from iCloud yet?)")
+
+
+def name_only(sender):
+    """'Jane Doe <jane@x.com>' -> 'Jane Doe'; a bare address -> the part before @."""
+    m = re.match(r'\s*"?([^"<]*?)"?\s*<', sender)
+    if m and m.group(1):
+        return m.group(1)
+    return sender.split("@")[0].strip()
+
+
+def cell(s, limit=None):
+    s = s.replace("|", "\\|").strip()
+    return s if not limit or len(s) <= limit else s[:limit - 1] + "…"
+
+
+def main():
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+    else:
+        path = os.path.join(LOG_DIR, "last-run.txt")  # overwritten by every run
+        if not os.path.exists(path):
+            sys.exit(f"No {path} yet. Run the shortcut first.")
+    lines = read(path).splitlines()
+    cols = lines[0].split("\t")
+    rows = [dict(zip(cols, line.split("\t"))) for line in lines[1:] if line.strip()]
+    rows.sort(key=lambda r: ORDER.get(r.get("decision", ""), 9))
+    counts = {}
+    for r in rows:
+        counts[r.get("decision", "")] = counts.get(r.get("decision", ""), 0) + 1
+    print(f"{os.path.basename(path)}: {len(rows)} messages, "
+          + ", ".join(f"{d} {n}" for d, n in sorted(counts.items(), key=lambda x: ORDER.get(x[0], 9))) + "\n")
+    print("| # | Decision | Level | Flag | Conf | Op | Sender | Subject | Reason | Note |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
+    for i, r in enumerate(rows, 1):
+        cells = [str(i), r.get("decision", ""), r.get("level", ""), r.get("flag", ""), r.get("confidence", ""),
+                 r.get("op", ""), cell(name_only(r.get("from", "")), 40), cell(r.get("subject", ""), 60),
+                 cell(r.get("reason", "")), cell(r.get("note", ""), 80)]
+        print("| " + " | ".join(cells) + " |")
+
+if __name__ == "__main__":
+    main()

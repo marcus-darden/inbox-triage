@@ -1,0 +1,4 @@
+Content rules (they apply whoever the sender is):
+1. A student asking the user for a letter of recommendation: KEEP, with "flag": "needs-you".
+2. Any mail from a person that the user needs to answer or act on: KEEP, with "flag": "needs-you".
+(Add more rules below, one per line: what the message is about, the action, and the flag if any.)

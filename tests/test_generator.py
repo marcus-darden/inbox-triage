@@ -1,0 +1,148 @@
+"""Invariants of the generated shortcuts. Each one guards against a failure seen on a real iPhone."""
+import pytest
+from conftest import NAMES
+
+# Every action the generator may emit. A typo'd identifier imports as an unknown action.
+KNOWN_ACTIONS = {
+    "is.workflow.actions." + a for a in [
+        "alert", "appendnote", "appendvariable", "askllm", "base64encode", "choosefrommenu", "comment",
+        "conditional", "count", "detect.dictionary", "detect.text", "dictionary", "documentpicker.open",
+        "documentpicker.save", "downloadurl", "exit", "filter.notes", "format.date", "getrichtextfromhtml",
+        "gettext", "getvalueforkey", "notification", "output", "repeat.each", "runworkflow", "setvariable",
+        "text.replace", "text.split", "urlencode", "ask", "adjustdate",
+    ]
+} | {
+    "com.apple.mobilenotes.SharingExtension",       # Create Note
+    "com.apple.Notes.DeleteNotesLinkAction",        # Delete Notes
+    "app.locallyai.Locally.AskLocallyIntent",       # Locally AI
+}
+TEXT_CONDITIONS = {4, 5, 8, 9, 99, 999}  # is, is not, begins with, ends with, contains, does not contain
+VALUE_CONDITIONS = {100, 101}            # has any value, does not have any value
+BUILTIN_VARIABLES = {"Repeat Item", "Repeat Item 2", "Repeat Index"}
+
+
+def actions_of(shortcuts, name):
+    return shortcuts[name]["WFWorkflowActions"]
+
+
+def all_actions(shortcuts):
+    for name in NAMES:
+        for a in actions_of(shortcuts, name):
+            yield name, a["WFWorkflowActionIdentifier"], a["WFWorkflowActionParameters"]
+
+
+def walk(value):
+    """Yield every dict nested anywhere in a parameter value."""
+    if isinstance(value, dict):
+        yield value
+        for v in value.values():
+            yield from walk(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from walk(v)
+
+
+def if_input(params):
+    return params["WFInput"]["Variable"]["Value"]
+
+
+def is_text_typed(ref):
+    return any(a.get("CoercionItemClass") == "WFStringContentItem" for a in ref.get("Aggrandizements", []))
+
+
+def test_all_three_build(shortcuts):
+    assert set(shortcuts) == set(NAMES)
+    for name in NAMES:
+        assert actions_of(shortcuts, name), name
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_control_blocks_are_balanced(shortcuts, name):
+    stack = []
+    for a in actions_of(shortcuts, name):
+        p = a["WFWorkflowActionParameters"]
+        mode = p.get("WFControlFlowMode")
+        if mode is None:
+            continue
+        group = p["GroupingIdentifier"]
+        if mode == 0:
+            stack.append(group)
+        elif mode == 1:
+            assert stack and stack[-1] == group, "Otherwise outside its block"
+        else:
+            assert stack and stack.pop() == group, "End without a matching start"
+    assert not stack, "unclosed block"
+
+
+def test_every_action_identifier_is_known(shortcuts):
+    unknown = {ident for _, ident, _ in all_actions(shortcuts)} - KNOWN_ACTIONS
+    assert not unknown
+
+
+def test_no_dotted_dictionary_keys(shortcuts):
+    """A missing key anywhere in 'a.b.c' stops the whole run on iOS, so keys are read one at a time."""
+    dotted = [(n, p["WFDictionaryKey"]) for n, i, p in all_actions(shortcuts)
+              if i.endswith("getvalueforkey") and "." in str(p.get("WFDictionaryKey", ""))]
+    assert not dotted
+
+
+def test_text_comparisons_have_typed_inputs(shortcuts):
+    """An untyped variable makes 'is' / 'contains' show as an invalid (red) condition in the editor."""
+    bad = []
+    for name, ident, p in all_actions(shortcuts):
+        if ident.endswith("conditional") and p.get("WFCondition") in TEXT_CONDITIONS:
+            ref = if_input(p)
+            if not (is_text_typed(ref) or ref.get("Type") == "ActionOutput"):
+                bad.append((name, ref.get("VariableName")))
+    assert not bad
+
+
+def test_text_variables_never_use_has_value(shortcuts):
+    """An empty Text counts as 'has any value'; emptiness must be tested as 'value|' == '|'."""
+    bad = [(name, if_input(p).get("VariableName")) for name, ident, p in all_actions(shortcuts)
+           if ident.endswith("conditional") and p.get("WFCondition") in VALUE_CONDITIONS
+           and is_text_typed(if_input(p))]
+    assert not bad
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_every_variable_read_is_set_somewhere(shortcuts, name):
+    """A variable that is read but never set is a typo; Shortcuts would silently treat it as empty."""
+    acts = actions_of(shortcuts, name)
+    written = BUILTIN_VARIABLES | {a["WFWorkflowActionParameters"]["WFVariableName"] for a in acts
+                                   if a["WFWorkflowActionIdentifier"].endswith(("setvariable", "appendvariable"))}
+    read = {d["VariableName"] for a in acts for d in walk(a["WFWorkflowActionParameters"])
+            if d.get("Type") == "Variable" and "VariableName" in d}
+    assert read <= written, sorted(read - written)
+
+
+def test_create_note_uses_the_ios_body_key(shortcuts):
+    """On iOS 26 the body goes in WFCreateNoteInput; 'contents' is ignored and leaves an empty note."""
+    notes = [p for _, i, p in all_actions(shortcuts) if i == "com.apple.mobilenotes.SharingExtension"]
+    assert notes
+    for p in notes:
+        assert "WFCreateNoteInput" in p and "contents" not in p
+
+
+def test_gmail_token_only_goes_to_google(shortcuts):
+    """The unsubscribe POST goes to a sender's URL, so it must never carry the Gmail Authorization header."""
+    for _, ident, p in all_actions(shortcuts):
+        if ident.endswith("downloadurl") and "Authorization" in str(p.get("WFHTTPHeaders", "")):
+            url = p["WFURL"]["Value"]
+            assert "googleapis.com" in url["string"] or url["attachmentsByRange"], url
+
+
+def test_unsubscribe_post_has_no_headers(shortcuts):
+    posts = [p for _, i, p in all_actions(shortcuts)
+             if i.endswith("downloadurl") and "One-Click" in str(p.get("WFFormValues", ""))]
+    assert posts
+    for p in posts:
+        assert "WFHTTPHeaders" not in p
+
+
+def test_menu_skipped_for_the_automation(shortcuts):
+    """The automation passes 'default'; the front end must branch on it before showing the menu."""
+    acts = actions_of(shortcuts, "InboxTriage")
+    first_menu = next(i for i, a in enumerate(acts) if a["WFWorkflowActionIdentifier"].endswith("choosefrommenu"))
+    assert any(a["WFWorkflowActionParameters"].get("WFConditionalActionString") == "default"
+               for a in acts[:first_menu])

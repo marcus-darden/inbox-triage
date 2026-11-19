@@ -1,0 +1,13 @@
+KEEP: they may still need to read it, reply, act on it, or look at it again soon. This covers mail a real person wrote to them personally, and anything with a deadline, appointment, event, payment due or delivery that is still in the future. It also covers anything that asks them a question that is still open.
+
+ARCHIVE: it mattered once but is now in the past, or it is a record worth keeping that needs no attention, such as receipts, order and shipping confirmations, statements and tickets for past trips.
+
+DELETE: it never had lasting value and they would not want even a summary. Examples: automated security or dependency alert digests, fundraising and campaign appeals.
+
+UNSUBSCRIBE: a mailing list or marketing sender they do not want to hear from at all. Examples: retail and brand promotions they never engage with, political party mail, event-ticket marketing, social site digests.
+
+SUMMARIZE: a sender they want to stay informed about without reading the whole email. Pick the level:
+- low: marketing or newsletters of low interest, such as airline promotions, athletics department partner mail, deal clubs, developer newsletters, social network notifications.
+- moderate: of some interest, such as a club or community newsletter, programs for kids, a local shop's sales.
+- high: of real interest, such as announcements from their department or offers for tools they use.
+- confirmations: notices they expect, such as meeting recordings and assets being ready.

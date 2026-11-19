@@ -1,0 +1,9 @@
+build/
+local/
+log/
+*.log
+secrets*.json
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/

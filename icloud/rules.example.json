@@ -1,0 +1,75 @@
+{
+  "_comment": "Sender rules ('rules') and content keyword rules ('content'), applied before the model. A sender rule matches when From contains 'from' and, if set, Subject contains 'subject'. A content rule matches when Subject or the Gmail snippet contains 'keyword'; content rules win over sender rules. The last match wins. action: KEEP, ARCHIVE, DELETE, UNSUBSCRIBE or SUMMARIZE. level (SUMMARIZE only): low, moderate, high or confirmations. flag: 'needs-you' lists the message under Needs you in the report. Plain-English content rules for the model go in prompts/content-rules.txt.",
+  "rules": [
+    {
+      "from": "noreply@github.example",
+      "subject": "Dependabot alerts",
+      "action": "DELETE",
+      "level": "",
+      "flag": ""
+    },
+    {
+      "from": "@deals.example.com",
+      "subject": "",
+      "action": "UNSUBSCRIBE",
+      "level": "",
+      "flag": ""
+    },
+    {
+      "from": "newsletter@airline.example",
+      "subject": "",
+      "action": "SUMMARIZE",
+      "level": "low",
+      "flag": ""
+    },
+    {
+      "from": "news@club.example.org",
+      "subject": "",
+      "action": "SUMMARIZE",
+      "level": "moderate",
+      "flag": ""
+    },
+    {
+      "from": "chair@department.example.edu",
+      "subject": "",
+      "action": "SUMMARIZE",
+      "level": "high",
+      "flag": ""
+    },
+    {
+      "from": "no-reply@meetings.example",
+      "subject": "",
+      "action": "SUMMARIZE",
+      "level": "confirmations",
+      "flag": ""
+    },
+    {
+      "from": "receipts@shop.example",
+      "subject": "",
+      "action": "ARCHIVE",
+      "level": "",
+      "flag": ""
+    },
+    {
+      "from": "coach@team.example.org",
+      "subject": "",
+      "action": "KEEP",
+      "level": "",
+      "flag": ""
+    }
+  ],
+  "content": [
+    {
+      "keyword": "letter of recommendation",
+      "action": "KEEP",
+      "level": "",
+      "flag": "needs-you"
+    },
+    {
+      "keyword": "recommendation letter",
+      "action": "KEEP",
+      "level": "",
+      "flag": "needs-you"
+    }
+  ]
+}

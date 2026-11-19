@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Turn the owner's feedback into proposed rule changes.
+
+Reads iCloud Drive/Shortcuts/EmailTriage/feedback/pending.tsv (written by InboxTriage > Apply feedback:
+date, note, id, original, corrected, line), looks up each message's sender address in Gmail, and
+proposes sender rules for icloud/rules.json as a diff.
+
+Usage: bin/learn            show the proposal (changes nothing)
+       bin/learn --apply    write local/rules.json, run bin/deploy and clear pending.tsv
+                            (only after the owner has approved the proposal)
+
+Corrections that aren't about a sender (one-off KEEPs, RELEASE from Kept) are listed for a person
+or agent to turn into content rules in icloud/prompts/content-rules.txt by hand.
+"""
+import collections
+import difflib
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RULES = os.path.join(REPO, "local", "rules.json")  # personal, gitignored
+RULES_EXAMPLE = os.path.join(REPO, "icloud", "rules.example.json")
+ICLOUD = os.path.expanduser("~/Library/Mobile Documents")
+PENDING = os.path.join(ICLOUD, "iCloud~is~workflow~my~workflows/Documents/EmailTriage/feedback/pending.tsv")
+PROPOSED = os.path.join(ICLOUD, "iCloud~is~workflow~my~workflows/Documents/EmailTriage/feedback/proposed-rules.json")
+SECRETS = os.path.join(ICLOUD, "com~apple~CloudDocs/.config/inbox-triage/secrets.json")
+GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+
+
+def read_icloud(path):
+    subprocess.run(["brctl", "download", path], capture_output=True)
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def access_token():
+    s = json.loads(read_icloud(SECRETS))
+    data = urllib.parse.urlencode({"client_id": s["CLIENT_ID"], "client_secret": s["CLIENT_SECRET"],
+                                   "refresh_token": s["REFRESH_TOKEN"], "grant_type": "refresh_token"}).encode()
+    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data)) as r:
+        return json.load(r)["access_token"]
+
+
+def sender_address(token, msg_id):
+    url = f"{GMAIL}/{msg_id}?format=metadata&metadataHeaders=From"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Bearer " + token})) as r:
+            headers = json.load(r)["payload"]["headers"]
+    except Exception:
+        return ""
+    value = next((h["value"] for h in headers if h["name"].lower() == "from"), "")
+    m = re.search(r"<([^>]+)>", value)
+    return (m.group(1) if m else value).strip().lower()
+
+
+def to_rule(corrected):
+    """'SUMMARIZE low' -> ('SUMMARIZE', 'low'); 'RELEASE' -> None (not a rule)."""
+    parts = corrected.split()
+    if not parts or parts[0] == "RELEASE":
+        return None
+    return parts[0], (parts[1] if len(parts) > 1 else "")
+
+
+def unique_rows(rows):
+    """Valid pending rows, keeping the first of each (id, correction): a note may be shared twice."""
+    seen, unique = set(), []
+    for r in rows:
+        if len(r) >= 5 and (r[2], r[4]) not in seen:
+            seen.add((r[2], r[4]))
+            unique.append(r)
+    return unique
+
+
+def propose(rows, rules, lookup):
+    """Return (proposed rules, corrections needing a person, sender count).
+
+    lookup(msg_id) returns the sender address. One sender with one consistent corrected action
+    becomes a sender rule. A single KEEP ("undo") is about that message rather than the sender,
+    so it needs at least two before it becomes a rule. Everything else goes to the manual list.
+    """
+    by_sender = collections.defaultdict(list)
+    for _date, _note, msg_id, original, corrected, *line in rows:
+        by_sender[lookup(msg_id)].append((original, corrected, line[0] if line else ""))
+    rules = json.loads(json.dumps(rules))  # copy
+    manual = []
+    for addr, items in sorted(by_sender.items()):
+        targets = {to_rule(c) for _, c, _ in items} - {None}
+        if not addr or len(targets) != 1:
+            manual += [(addr, o, c, line) for o, c, line in items]
+            continue
+        action, level = targets.pop()
+        if action == "KEEP" and len(items) < 2:
+            manual += [(addr, o, c, line) for o, c, line in items]
+            continue
+        # Replace any sender rule (without a subject condition) that already matches this address.
+        rules["rules"] = [r for r in rules["rules"] if r.get("subject") or r["from"].lower() not in addr]
+        rules["rules"].append({"from": addr, "subject": "", "action": action, "level": level, "flag": ""})
+    return rules, manual, len(by_sender)
+
+
+def main():
+    if not os.path.exists(PENDING):
+        sys.exit("No feedback yet (pending.tsv not found).")
+    rows = unique_rows([line.split("\t") for line in read_icloud(PENDING).splitlines() if line.strip()])
+    if not rows:
+        sys.exit("pending.tsv is empty.")
+    token = access_token()
+    with open(RULES if os.path.exists(RULES) else RULES_EXAMPLE) as f:
+        rules = json.load(f)
+    before = json.dumps(rules, indent=2) + "\n"
+    proposed, manual, senders = propose(rows, rules, lambda msg_id: sender_address(token, msg_id))
+    after = json.dumps(proposed, indent=2) + "\n"
+
+    print(f"{len(rows)} corrections from {senders} senders.\n")
+    diff = list(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                     "rules.json (now)", "rules.json (proposed)"))
+    print("".join(diff) if diff else "No sender-rule changes proposed.\n")
+    if manual:
+        print("\nNeeds a person or agent (content rule, prompt change, or nothing):")
+        for addr, o, c, line in manual:
+            print(f"  {addr or '?'}: {o} -> {c} | {line[:100]}")
+
+    if os.path.exists(PROPOSED):
+        print("\nThe on-device model's proposals from the last Apply feedback (feedback/proposed-rules.json),")
+        print("for comparison. These are suggestions only; --apply uses the diff above, not this file:")
+        print(read_icloud(PROPOSED).strip() or "(empty)")
+
+    if "--apply" in sys.argv:
+        if diff:
+            os.makedirs(os.path.dirname(RULES), exist_ok=True)
+            with open(RULES, "w") as f:
+                f.write(after)
+            subprocess.run([os.path.join(REPO, "bin", "deploy")], check=True)
+        with open(PENDING, "w") as f:
+            f.write("")
+        print(f"\nWrote {RULES}, deployed, and cleared pending.tsv.")
+    elif diff:
+        print("\nNothing changed. Run bin/learn --apply once this is approved.")
+
+if __name__ == "__main__":
+    main()

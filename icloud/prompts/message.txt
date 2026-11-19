@@ -1,0 +1,7 @@
+Message:
+From: {SENDER}
+Date: {RECEIVED}
+Gmail labels: {LABELS}
+Subject: {SUBJECT}
+Snippet:
+{BODY}

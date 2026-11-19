@@ -1,0 +1,1 @@
+Summarize this email for the user in exactly ONE bullet: the single most important point of the whole email. Start the line with "- ". No other text.

@@ -1,0 +1,1206 @@
+#!/usr/bin/env python3
+"""Generate and sign the Inbox Triage shortcuts into build/:
+
+  InboxTriage Token   reads iCloud Drive/.config/inbox-triage/secrets.json and outputs a Gmail access token
+  InboxTriage Engine  the triage run (rules, on-device model, Gmail changes, report note); takes overrides
+  InboxTriage         menu (Default / Kept / Custom / Apply feedback); input "default" skips the menu
+
+Settings and prompts are read at run time from iCloud Drive/Shortcuts/EmailTriage/ (deployed by bin/deploy).
+
+Usage: bin/build-shortcut [--no-sign]
+"""
+import os
+import plistlib
+import subprocess
+import sys
+import time
+import uuid
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BUILD = os.environ.get("INBOX_TRIAGE_BUILD", os.path.join(REPO, "build"))
+OBJ = "￼"  # placeholder character that marks a variable inside a text field
+GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+# Folder iCloud Drive/.config/inbox-triage, file secrets.json, with no slashes in the path:
+# the combination that works once the folder is picked in the Mac Shortcuts app.
+# A generated folder can't carry the access grant, so the pick is redone after each import.
+SECRETS_DIR = ".config/inbox-triage"
+SECRETS_PATH = "secrets.json"
+CONFIG_FOLDER = {
+    "fileLocation": {"WFFileLocationType": "iCloud", "relativeSubpath": "com~apple~CloudDocs/" + SECRETS_DIR,
+                     "fileProviderDomainID": "com.apple.CloudDocs.MobileDocumentsFileProvider"},
+    "filename": "inbox-triage", "displayName": "inbox-triage",
+}
+
+LEVELS = ["low", "moderate", "high", "confirmations"]
+DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
+
+
+# ---- patterns (ICU syntax in Shortcuts; Python re reads these the same way, see tests/) ----
+BARE_ADDRESS_RE = r"^\s*([^@\s<>]+)@([^@\s<>]+)\s*$"
+SENDER_NAME_RE = r'^\s*"?([^"<]*?)"?\s*<[\s\S]*$'
+BODY_PLAIN_RE = r'^[\s\S]*?"mimeType":\s*"text/plain"[\s\S]*?"body":\s*\{[^}]*?"data":\s*"([^"]+)"[\s\S]*$'
+BODY_HTML_RE = r'^[\s\S]*?"mimeType":\s*"text/html"[\s\S]*?"body":\s*\{[^}]*?"data":\s*"([^"]+)"[\s\S]*$'
+PAD2_RE = r"^((?:[\s\S]{4})*[\s\S]{2})$"
+PAD3_RE = r"^((?:[\s\S]{4})*[\s\S]{3})$"
+UNSUB_HTTPS_RE = r"^[\s\S]*?<(https://[^>]+)>[\s\S]*$"
+UNSUB_MAILTO_RE = r"^[\s\S]*?<mailto:([^>?]+)[^>]*>[\s\S]*$"
+LEAD = r"^[\s\u2022\u25e6\u25aa\u2610\u2611\u2612\u2713\u2714\u25cb\u25cf*\-]*"  # bullets, spaces, checkboxes
+FEEDBACK_MARK_RE = "(?i)" + LEAD + r"x[kadlmhcur](?:\s[^)]*)?\)[\s\S]*id:\S+[\s\S]*$"
+FEEDBACK_ID_RE = r"^[\s\S]*id:(\S+)[\s\S]*$"
+FEEDBACK_ORIGINAL_RE = r"^[\s\S]* · ([A-Z]+)(?:·[a-z]+)? · [\s\S]*$"
+FEEDBACK_ITEM_RE = r"^[^)]*\)\s*([\s\S]*?) · [A-Z][\s\S]*$"
+FROM_HEADER_RE = r'^[\s\S]*?"name":\s*"From",\s*"value":\s*"((?:[^"\\]|\\.)*)"[\s\S]*$'
+FEEDBACK_HINT_RE = "(?i)" + LEAD + r"x[kadlmhcur](?:\s+([^)]*?))?\s*\)[\s\S]*$"
+
+
+def feedback_code_re(code):
+    """Matches a line tagged with this two-letter code, e.g. 'xa)' or 'xm a hint)'."""
+    return "(?i)" + LEAD + "x" + code + r"(?:\s[^)]*)?\)[\s\S]*$"
+
+
+
+actions = []
+import_questions = []
+
+
+def new_uuid():
+    return str(uuid.uuid4()).upper()
+
+
+# ---- value encoders --------------------------------------------------------
+# A "ref" is the attachment dict for a variable or an earlier action's output.
+
+def var(name):
+    return {"Type": "Variable", "VariableName": name}
+
+
+def typed(name, item_class):
+    """A named variable with its type set (the editor's Type option), so If offers the right conditions."""
+    return {"Type": "Variable", "VariableName": name,
+            "Aggrandizements": [{"Type": "WFCoercionVariableAggrandizement", "CoercionItemClass": item_class}]}
+
+
+def as_text(name):
+    return typed(name, "WFStringContentItem")
+
+
+def as_number(name):
+    return typed(name, "WFNumberContentItem")
+
+
+def out(action):
+    return {"Type": "ActionOutput", "OutputUUID": action["uuid"], "OutputName": action["name"]}
+
+
+def attachment(ref):
+    """A parameter that is a single variable (WFInput and similar)."""
+    return {"Value": ref, "WFSerializationType": "WFTextTokenAttachment"}
+
+
+def text(*parts):
+    """A text parameter mixing literal strings and refs (dicts)."""
+    s, ranges = "", {}
+    for p in parts:
+        if isinstance(p, str):
+            s += p
+        else:
+            pos = len(s.encode("utf-16-le")) // 2
+            ranges[f"{{{pos}, 1}}"] = p
+            s += OBJ
+    return {"Value": {"string": s, "attachmentsByRange": ranges}, "WFSerializationType": "WFTextTokenString"}
+
+
+def fields(pairs):
+    """Header or form fields: list of (key, value-parts tuple)."""
+    items = [{"WFItemType": 0, "WFKey": text(k), "WFValue": text(*v)} for k, v in pairs]
+    return {"Value": {"WFDictionaryFieldValueItems": items}, "WFSerializationType": "WFDictionaryFieldValue"}
+
+
+# ---- action builders -------------------------------------------------------
+
+def add(ident, params, name=None):
+    a = {"uuid": new_uuid(), "name": name}
+    p = dict(params)
+    if name:
+        p["UUID"] = a["uuid"]
+    full = ident if ident.startswith(("com.", "app.")) else "is.workflow.actions." + ident
+    actions.append({"WFWorkflowActionIdentifier": full,
+                    "WFWorkflowActionParameters": p})
+    return a
+
+
+def comment(s):
+    add("comment", {"WFCommentActionText": s})
+
+
+def text_action(*parts):
+    return add("gettext", {"WFTextActionText": text(*parts)}, "Text")
+
+
+def set_var(name, ref):
+    add("setvariable", {"WFVariableName": name, "WFInput": attachment(ref)})
+
+
+def append_var(name, ref):
+    add("appendvariable", {"WFVariableName": name, "WFInput": attachment(ref)})
+
+
+def set_text(name, *parts):
+    set_var(name, out(text_action(*parts)))
+
+
+def dict_value(ref, key):
+    return add("getvalueforkey", {"WFInput": attachment(ref), "WFDictionaryKey": key,
+                                  "WFGetDictionaryValueType": "Value"}, "Dictionary Value")
+
+
+def to_dict(ref):
+    return add("detect.dictionary", {"WFInput": attachment(ref)}, "Dictionary")
+
+
+def get_file(path, required=True):
+    """Get File from the Shortcuts folder. path: a string, or a tuple of text parts."""
+    return add("documentpicker.open", {"WFGetFilePath": text(*path) if isinstance(path, tuple) else path,
+                                       "WFShowFilePicker": False, "WFFileErrorIfNotFound": required}, "File")
+
+
+def save_file(ref, *path_parts):
+    return add("documentpicker.save", {"WFInput": attachment(ref), "WFAskWhereToSave": False,
+                                       "WFFileDestinationPath": text(*path_parts),
+                                       "WFSaveFileOverwrite": True}, "Saved File")
+
+
+def replace(ref, find, *replacement):
+    return add("text.replace", {"WFInput": text(ref), "WFReplaceTextFind": find,
+                                "WFReplaceTextReplace": text(*replacement)}, "Updated Text")
+
+
+def regex_replace(ref, pattern, *replacement):
+    return add("text.replace", {"WFInput": text(ref), "WFReplaceTextFind": pattern,
+                                "WFReplaceTextReplace": text(*replacement),
+                                "WFReplaceTextRegularExpression": True}, "Updated Text")
+
+
+def ask_model(prompt_ref, result_type):
+    return add("askllm", {"WFLLMPrompt": text(prompt_ref), "WFLLMModel": "Apple Intelligence on Device",
+                          "WFGenerativeResultType": result_type, "FollowUp": False}, "Response")
+
+
+LOCALLY_MODEL = {"title": {"key": "Ternary Bonsai 2 (9B)"},
+                 "identifier": "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
+                 "subtitle": {"key": "Ternary Bonsai 2 (9B)"}}
+
+
+def ask_locally(prompt_ref):
+    """Locally AI's Ask action, serialized as in an Ask Locally AI action exported from Shortcuts."""
+    return add("app.locallyai.Locally.AskLocallyIntent", {
+        "AppIntentDescriptor": {"TeamIdentifier": "D65G88RHWN", "BundleIdentifier": "app.locallyai.Locally",
+                                "Name": "Locally", "AppIntentIdentifier": "AskLocallyIntent"},
+        "model": LOCALLY_MODEL, "prompt": text(prompt_ref), "ShowWhenRun": False}, "Response")
+
+
+def fmt_date(pattern):
+    return add("format.date", {"WFDate": text({"Type": "CurrentDate"}), "WFDateFormatStyle": "Custom",
+                               "WFDateFormat": pattern, "WFTimeFormatStyle": "None"}, "Formatted Date")
+
+
+def http(method, url_parts, body=None, json_text=None):
+    """Get Contents of URL with the Gmail bearer token.
+    body: list of form pairs. json_text: a Text action output sent as a JSON body."""
+    headers = [("Authorization", ("Bearer ", var("AccessToken")))]
+    p = {"WFURL": text(*url_parts), "WFHTTPMethod": method, "ShowHeaders": False}
+    if json_text is not None:
+        headers.append(("Content-Type", ("application/json",)))
+        p["WFHTTPBodyType"] = "File"
+        p["WFRequestVariable"] = attachment(out(json_text))
+    elif method == "POST":
+        p["WFHTTPBodyType"] = "JSON"
+    p["WFHTTPHeaders"] = fields(headers)
+    return add("downloadurl", p, "Contents of URL")
+
+
+class Block:
+    """Start/Otherwise/End markers for If and Repeat share a GroupingIdentifier."""
+
+    def __init__(self, ident, start_params, name):
+        self.ident, self.group, self.name = ident, new_uuid(), name
+        add(ident, dict(start_params, GroupingIdentifier=self.group, WFControlFlowMode=0))
+
+    def otherwise(self):
+        add(self.ident, {"GroupingIdentifier": self.group, "WFControlFlowMode": 1})
+
+    def end(self):
+        add(self.ident, {"GroupingIdentifier": self.group, "WFControlFlowMode": 2}, self.name)
+
+
+IS, IS_NOT, LESS_THAN, BEGINS_WITH, CONTAINS, HAS_VALUE, NO_VALUE = 4, 5, 0, 8, 99, 100, 101
+
+
+def if_text(ref, cond, value):
+    return Block("conditional", {"WFInput": {"Type": "Variable", "Variable": attachment(ref)},
+                                 "WFCondition": cond, "WFConditionalActionString": value}, "If Result")
+
+
+def if_text_var(ref, cond, *parts):
+    """If whose comparison value contains variables."""
+    return Block("conditional", {"WFInput": {"Type": "Variable", "Variable": attachment(ref)},
+                                 "WFCondition": cond, "WFConditionalActionString": text(*parts)}, "If Result")
+
+
+def _text_var_name(ref):
+    """The variable name if ref is a Text-typed named variable (as_text), else None."""
+    for a in ref.get("Aggrandizements", []):
+        if a.get("CoercionItemClass") == "WFStringContentItem":
+            return ref.get("VariableName")
+    return None
+
+
+def _if_text_empty(name, cond):
+    # Shortcuts treats an empty Text value as "has any value", so test "value|" against "|".
+    set_text("_Empty", var(name), "|")
+    return if_text(as_text("_Empty"), cond, "|")
+
+
+def if_has_value(ref):
+    name = _text_var_name(ref)
+    if name:
+        return _if_text_empty(name, IS_NOT)
+    return Block("conditional", {"WFInput": {"Type": "Variable", "Variable": attachment(ref)},
+                                 "WFCondition": HAS_VALUE}, "If Result")
+
+
+def if_less_than(ref, other):
+    return Block("conditional", {"WFInput": {"Type": "Variable", "Variable": attachment(ref)},
+                                 "WFCondition": LESS_THAN, "WFNumberValue": attachment(other)}, "If Result")
+
+
+def if_no_value(ref):
+    name = _text_var_name(ref)
+    if name:
+        return _if_text_empty(name, IS)
+    return Block("conditional", {"WFInput": {"Type": "Variable", "Variable": attachment(ref)},
+                                 "WFCondition": NO_VALUE}, "If Result")
+
+
+def secrets_alert():
+    add("alert", {"WFAlertActionTitle": "Inbox Triage",
+                  "WFAlertActionMessage": "Couldn't read CLIENT_ID, CLIENT_SECRET and REFRESH_TOKEN from "
+                                          "iCloud Drive/" + SECRETS_DIR + "/" + SECRETS_PATH +
+                                          ". In the Shortcuts app on a "
+                                          "Mac, set the first Get File action's folder to " + SECRETS_DIR +
+                                          " (Cmd+Shift+. shows hidden folders), file " + SECRETS_PATH + ".",
+                  "WFAlertActionCancelButtonShown": False})
+    add("exit", {})
+
+
+def repeat_each(ref):
+    return Block("repeat.each", {"WFInput": attachment(ref)}, "Repeat Results")
+
+
+
+TOKEN, ENGINE, FRONT = "InboxTriage Token", "InboxTriage Engine", "InboxTriage"
+FEEDBACK_CODES = [("k", "KEEP"), ("a", "ARCHIVE"), ("d", "DELETE"), ("l", "SUMMARIZE low"),
+                  ("m", "SUMMARIZE moderate"), ("h", "SUMMARIZE high"), ("c", "SUMMARIZE confirmations"),
+                  ("u", "UNSUBSCRIBE"), ("r", "RELEASE")]
+FEEDBACK_HELP = ("**Feedback:** start a line with a two-letter code, an optional hint, and a closing parenthesis: "
+                 "xa) to archive, or xm I'm interested in shoes) to summarize at moderate and give a hint for the "
+                 "rules. Codes: xk keep (back to the inbox), xa archive, xd delete, xl / xm / xh summarize low / "
+                 "moderate / high, xc confirmation, xu unsubscribe, xr release from Kept. A hint can't contain \")\". "
+                 "Then share this note to InboxTriage.")
+
+
+def run_shortcut(name, input_ref=None):
+    p = {"WFWorkflowName": name}
+    if input_ref is not None:
+        p["WFInput"] = attachment(input_ref)
+    return add("runworkflow", p, "Shortcut Result")
+
+
+def dictionary(pairs):
+    return add("dictionary", {"WFItems": fields(pairs)}, "Dictionary")
+
+
+def ask(prompt, input_type="Text", default=""):
+    p = {"WFAskActionPrompt": prompt, "WFInputType": input_type}
+    if default:
+        p["WFAskActionDefaultAnswer"] = default
+    return add("ask", p, "Provided Input")
+
+
+class Menu:
+    def __init__(self, prompt, items):
+        self.group = new_uuid()
+        add("choosefrommenu", {"WFMenuPrompt": prompt, "WFMenuItems": items,
+                               "GroupingIdentifier": self.group, "WFControlFlowMode": 0})
+
+    def item(self, title):
+        add("choosefrommenu", {"WFMenuItemTitle": title, "GroupingIdentifier": self.group, "WFControlFlowMode": 1})
+
+    def end(self):
+        add("choosefrommenu", {"GroupingIdentifier": self.group, "WFControlFlowMode": 2}, "Menu Result")
+
+
+def prop(name, prop_name):
+    return {"Type": "Variable", "VariableName": name,
+            "Aggrandizements": [{"Type": "WFPropertyVariableAggrandizement", "PropertyName": prop_name}]}
+
+
+def write_shortcut(name, input_classes=(), types=()):
+    workflow = {
+        "WFWorkflowActions": list(actions),
+        "WFWorkflowClientVersion": "2700.0.4",
+        "WFWorkflowMinimumClientVersion": 900,
+        "WFWorkflowMinimumClientVersionString": "900",
+        "WFWorkflowIcon": {"WFWorkflowIconStartColor": 463140863, "WFWorkflowIconGlyphNumber": 59511},
+        "WFWorkflowImportQuestions": [],
+        "WFWorkflowInputContentItemClasses": list(input_classes),
+        "WFWorkflowOutputContentItemClasses": [],
+        "WFWorkflowTypes": list(types),
+        "WFQuickActionSurfaces": [],
+        "WFWorkflowHasShortcutInputVariables": bool(input_classes),
+    }
+    file = name  # iOS names an imported shortcut after its file; Run Shortcut matches that name
+    unsigned = os.path.join(BUILD, file + ".unsigned.shortcut")
+    signed = os.path.join(BUILD, file + ".shortcut")
+    with open(unsigned, "wb") as f:
+        plistlib.dump(workflow, f, fmt=plistlib.FMT_BINARY)
+    print(f"Wrote {unsigned} ({len(actions)} actions)")
+    actions.clear()
+    if "--no-sign" in sys.argv:
+        return
+    if os.path.exists(signed):
+        os.remove(signed)
+    # `shortcuts sign` sometimes fails with "The file doesn't exist" on a file that exists. Retry.
+    for _ in range(3):
+        sign = ["shortcuts", "sign", "--mode", "anyone", "--input", unsigned, "--output", signed]
+        if subprocess.run(sign).returncode == 0:
+            break
+        time.sleep(2)
+    else:
+        sys.exit("shortcuts sign failed 3 times for " + name)
+    print(f"Signed {signed}")
+
+
+def build_token():
+    comment("Read the Gmail secrets from iCloud Drive/.config/inbox-triage/secrets.json "
+            "(keys CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN). After each import, set the folder below to "
+            ".config/inbox-triage in the Mac Shortcuts app (Cmd+Shift+. shows hidden folders).")
+    secrets_file = add("documentpicker.open", {
+        "WFFile": CONFIG_FOLDER, "WFGetFilePath": SECRETS_PATH,
+        "WFShowFilePicker": False, "WFFileErrorIfNotFound": False}, "File")
+    b = if_no_value(out(secrets_file))
+    secrets_alert()
+    b.end()
+    set_var("Secrets", out(to_dict(out(secrets_file))))
+    for key, name in [("CLIENT_ID", "ClientID"), ("CLIENT_SECRET", "ClientSecret"), ("REFRESH_TOKEN", "RefreshToken")]:
+        set_text(name, out(dict_value(var("Secrets"), key)))
+        b = if_no_value(as_text(name))
+        secrets_alert()
+        b.end()
+
+    comment("Exchange the refresh token for a one-hour access token, and output it.")
+    token = add("downloadurl", {
+        "WFURL": text("https://oauth2.googleapis.com/token"), "WFHTTPMethod": "POST", "ShowHeaders": False,
+        "WFHTTPBodyType": "Form",
+        "WFFormValues": fields([("client_id", (var("ClientID"),)), ("client_secret", (var("ClientSecret"),)),
+                                ("refresh_token", (var("RefreshToken"),)), ("grant_type", ("refresh_token",))]),
+    }, "Contents of URL")
+    set_var("AccessToken", out(dict_value(out(token), "access_token")))
+    b = if_no_value(as_text("AccessToken"))
+    fail = text_action("Token exchange failed. Google said: ", out(token))  # an error reply holds no secrets
+    save_file(out(fail), "EmailTriage/log/last-error.txt")
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionMessage": text(out(fail)),
+                  "WFAlertActionCancelButtonShown": False})
+    add("exit", {})
+    b.end()
+    add("output", {"WFOutput": text(var("AccessToken"))})
+
+
+def build_engine():
+    comment("Load config.json, rules.json and the prompt files.")
+    set_var("Config", out(to_dict(out(get_file("EmailTriage/config.json")))))
+    for key, name in [("dryRun", "DryRun"), ("allowDelete", "AllowDelete"), ("allowUnsubscribe", "AllowUnsubscribe"),
+                      ("minConfidence", "MinConfidence"), ("maxMessages", "MaxMessages"), ("query", "Query"),
+                      ("auditLabelId", "AuditLabel"), ("keptLabelId", "KeptLabel"), ("ignoreHours", "IgnoreHours")]:
+        set_var(name, out(dict_value(var("Config"), key)))
+    comment("Per-run overrides from the InboxTriage menu (Custom, Apply feedback). Empty for a default run.")
+    set_var("Params", out(to_dict({"Type": "ExtensionInput"})))
+    for key, name in [("maxMessages", "MaxMessages"), ("ignoreHours", "IgnoreHours"), ("dryRun", "DryRun"),
+                      ("allowDelete", "AllowDelete"), ("allowUnsubscribe", "AllowUnsubscribe"),
+                      ("recheckKept", "RecheckKept"), ("extraQuery", "ExtraQuery"), ("ids", "Ids"),
+                      ("force", "Force"), ("label", "RunLabel")]:
+        pv = dict_value(var("Params"), key)
+        b = if_has_value(out(pv))
+        set_var(name, out(pv))
+        b.end()
+    set_var("RulesFile", out(to_dict(out(get_file("EmailTriage/rules.json")))))
+    set_var("Rules", out(dict_value(var("RulesFile"), "rules")))
+    set_var("ContentRules", out(dict_value(var("RulesFile"), "content")))
+    for f, name in [("system", "PSystem"), ("categories", "PCategories"), ("keep-rules", "PRules"),
+                    ("content-rules", "PContent"), ("message", "PMessage")]:
+        set_text(name, out(get_file(f"EmailTriage/prompts/{f}.txt")))
+    for level in LEVELS:
+        set_text("PSum_" + level, out(get_file(f"EmailTriage/prompts/summary-{level}.txt")))
+
+    set_var("Today", out(fmt_date("EEEE, MMMM d, yyyy")))
+    set_var("NoteTime", out(fmt_date("EEE MMM d h:mm a")))
+    system = replace(var("PSystem"), "{TODAY}", var("Today"))
+    set_text("Instructions", out(system), "\n\n", var("PCategories"), "\n\n", var("PRules"), "\n\n", var("PContent"))
+
+    comment("Get a Gmail access token from the InboxTriage Token shortcut.")
+    set_text("AccessToken", out(run_shortcut(TOKEN)))
+    b = if_no_value(as_text("AccessToken"))
+    add("exit", {})
+    b.end()
+
+    set_text("KeptThreads", "")
+    set_text("Log", "decision\tlevel\tflag\tsrc\tconfidence\top\tdate\tfrom\tsubject\treason\tnote\tid\tlink")
+
+    comment("List inbox messages that match config.query.")
+    set_text("FullQuery", var("Query"), " older_than:", var("IgnoreHours"), "h")
+    b = if_text(as_text("RecheckKept"), IS_NOT, "true")
+    set_text("FullQuery", var("FullQuery"), " -label:autotriage-kept")
+    b.end()
+    set_text("FullQuery", var("FullQuery"), " ", var("ExtraQuery"))
+    query = add("urlencode", {"WFInput": text(var("FullQuery"))}, "URL Encoded Text")
+    list_url = text_action(GMAIL + "?maxResults=", var("MaxMessages"), "&q=", out(query))
+    set_var("ListURL", out(list_url))
+    comment("Feedback runs pass message ids instead of a search.")
+    b = if_has_value(as_text("Ids"))
+    set_var("Messages", out(add("text.split", {"text": text(var("Ids")), "WFTextSeparator": "Custom",
+                                               "WFTextCustomSeparator": ","}, "Split Text")))
+    b.otherwise()
+    listing = http("GET", (var("ListURL"),))
+    set_var("Listing", out(listing))
+    set_var("Messages", out(dict_value(out(listing), "messages")))
+    b.end()
+    comment("Bypassed: kept messages still in the inbox, skipped by this search.")
+    kept_list = http("GET", (GMAIL + "?maxResults=500&q=in%3Ainbox%20label%3Aautotriage-kept",))
+    set_text("Bypassed", out(dict_value(out(kept_list), "resultSizeEstimate")))
+    comment("No messages usually means Gmail returned an error. Save the URL and Gmail's reply, then stop.")
+    b = if_no_value(var("Messages"))
+    fail = text_action("No messages listed.\nURL: ", var("ListURL"), "\nGmail said: ", var("Listing"))
+    save_file(out(fail), "EmailTriage/log/last-error.txt")
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionMessage": text(out(fail)),
+                  "WFAlertActionCancelButtonShown": False})
+    add("exit", {})
+    b.end()
+    loop = repeat_each(var("Messages"))
+
+    comment("Feedback runs pass plain id strings; Get Dictionary Value on Text stops the shortcut, so branch.")
+    b = if_has_value(as_text("Ids"))
+    set_text("MsgId", var("Repeat Item"))
+    b.otherwise()
+    set_text("MsgId", out(dict_value(var("Repeat Item"), "id")))
+    b.end()
+    HEADERS = [("From", "From"), ("Subject", "Subject"), ("Date", "Date"), ("Message-ID", "MessageIdHdr"),
+               ("Message-Id", "MessageIdHdr"),
+               ("List-Unsubscribe", "ListUnsub"), ("List-Unsubscribe-Post", "ListUnsubPost")]
+    msg = http("GET", (GMAIL + "/", var("MsgId"), "?format=metadata"
+                       + "".join("&metadataHeaders=" + h for h, _ in HEADERS if h != "Message-Id")))
+    set_var("Msg", out(msg))
+    set_text("Snippet", out(dict_value(var("Msg"), "snippet")))
+    set_text("Labels", out(dict_value(var("Msg"), "labelIds")))
+    set_text("ThreadId", out(dict_value(var("Msg"), "threadId")))
+
+    comment("Pull the headers we need out of the headers list.")
+    for _, name in HEADERS:
+        set_text(name, "")
+    comment("One key at a time: a missing key in a dotted path (a.b.c) stops the whole run.")
+    set_text("Unreadable", "no")
+    set_var("Payload", out(dict_value(var("Msg"), "payload")))
+    pb = if_has_value(var("Payload"))
+    headers = repeat_each(out(dict_value(var("Payload"), "headers")))
+    set_var("HName", out(dict_value(var("Repeat Item 2"), "name")))
+    set_var("HValue", out(dict_value(var("Repeat Item 2"), "value")))
+    for header, name in HEADERS:
+        b = if_text(as_text("HName"), IS, header)
+        set_var(name, var("HValue"))
+        b.end()
+    headers.end()
+    pb.otherwise()
+    set_text("Unreadable", "yes")
+    pb.end()
+    comment("Sender display name for the note: the part before <address>.")
+    set_text("SenderName", out(regex_replace(var("From"), SENDER_NAME_RE, "$1")))
+    comment("A bare address at the start of a line made Notes' Markdown import leave a large gap: "
+            "show it as 'name (domain)' instead.")
+    set_text("SenderName", out(regex_replace(var("SenderName"), BARE_ADDRESS_RE, "$1 ($2)")))
+    comment("Links: Apple Mail opens the exact message (message://<Message-ID>); Gmail's iPhone app has no working "
+            "message link, so the second link is Gmail on the web, by thread.")
+    set_text("MessageIdHdr", out(regex_replace(var("MessageIdHdr"), r"\s+", "")))
+    mid = add("urlencode", {"WFInput": text(var("MessageIdHdr"))}, "URL Encoded Text")
+    set_text("Links", "[Open in Mail](message://", out(mid), ") · [Gmail web](https://mail.google.com/mail/u/0/#all/",
+             var("ThreadId"), ")")
+    set_text("Link", "message://", out(mid))
+    comment("Clean text for the note: Notes' Markdown import mis-renders '&' followed by letters and runs of "
+            "whitespace, so swap & for a full-width ＆ and collapse whitespace and invisible characters.")
+    for name in ("SenderName", "Subject"):
+        set_text(name, out(regex_replace(var(name), r"[\s\u00a0\u200b\u200c\u200d\ufeff]+", " ")))
+        set_text(name, out(replace(var(name), "&", "＆")))
+
+    comment("Feedback runs force a decision per message id: force is 'id=ACTION level;id=ACTION;...'.")
+    set_text("Forced", "no")
+    set_text("ForceRaw", out(regex_replace(var("Force"), "^(?:[\\s\\S]*;)?", var("MsgId"), "=([^;]*)[\\s\\S]*$", "$1")))
+    fb = if_has_value(as_text("Force"))
+    c = if_text_var(as_text("ForceRaw"), IS_NOT, var("Force"))
+    set_text("Forced", "yes")
+    c.end()
+    fb.end()
+    fb = if_text(as_text("Forced"), IS, "yes")
+    set_text("Decision", out(regex_replace(var("ForceRaw"), r"^(\S+)[\s\S]*$", "$1")))
+    set_text("Level", out(regex_replace(var("ForceRaw"), r"^\S+\s*(\S*)[\s\S]*$", "$1")))
+    set_text("Flag", "")
+    set_text("Confidence", "1")
+    set_text("Reason", "feedback")
+    set_text("Src", "feedback")
+    fb.otherwise()
+    comment("Sender rules (rules.json 'rules'): From contains 'from' and, if set, Subject contains 'subject'.")
+    for name in ("RuleAction", "RuleLevel", "RuleFlag", "RuleName"):
+        set_text(name, "")
+    rules = repeat_each(var("Rules"))
+    set_text("RFrom", out(dict_value(var("Repeat Item 2"), "from")))
+    set_text("RSubject", out(dict_value(var("Repeat Item 2"), "subject")))
+    set_text("Hit", "no")
+    b = if_text_var(as_text("From"), CONTAINS, var("RFrom"))
+    inner = if_no_value(as_text("RSubject"))
+    set_text("Hit", "yes")
+    inner.otherwise()
+    inner2 = if_text_var(as_text("Subject"), CONTAINS, var("RSubject"))
+    set_text("Hit", "yes")
+    inner2.end()
+    inner.end()
+    b.end()
+    b = if_text(as_text("Hit"), IS, "yes")
+    set_text("RuleAction", out(dict_value(var("Repeat Item 2"), "action")))
+    set_text("RuleLevel", out(dict_value(var("Repeat Item 2"), "level")))
+    set_text("RuleFlag", out(dict_value(var("Repeat Item 2"), "flag")))
+    set_text("RuleName", "sender ", var("RFrom"), " ", var("RSubject"))
+    b.end()
+    rules.end()
+
+    comment("Content keyword rules (rules.json 'content'): Subject or snippet contains 'keyword'. "
+            "They win over sender rules.")
+    crules = repeat_each(var("ContentRules"))
+    set_text("RKey", out(dict_value(var("Repeat Item 2"), "keyword")))
+    set_text("Hit", "no")
+    b = if_text_var(as_text("Subject"), CONTAINS, var("RKey"))
+    set_text("Hit", "yes")
+    b.end()
+    b = if_text_var(as_text("Snippet"), CONTAINS, var("RKey"))
+    set_text("Hit", "yes")
+    b.end()
+    b = if_text(as_text("Hit"), IS, "yes")
+    set_text("RuleAction", out(dict_value(var("Repeat Item 2"), "action")))
+    set_text("RuleLevel", out(dict_value(var("Repeat Item 2"), "level")))
+    set_text("RuleFlag", out(dict_value(var("Repeat Item 2"), "flag")))
+    set_text("RuleName", "content '", var("RKey"), "'")
+    b.end()
+    crules.end()
+
+    b = if_no_value(as_text("RuleAction"))
+    comment("No rule: fill in the message template and ask the on-device model.")
+    filled = var("PMessage")
+    for placeholder, value in [("{SENDER}", "From"), ("{RECEIVED}", "Date"), ("{SUBJECT}", "Subject"),
+                               ("{LABELS}", "Labels"), ("{BODY}", "Snippet")]:
+        filled = out(replace(filled, placeholder, var(value)))
+    prompt = text_action(var("Instructions"), "\n\n", filled)
+    answer = ask_model(out(prompt), "Dictionary")
+    set_var("Answer", out(to_dict(out(answer))))
+    set_text("Decision", out(dict_value(var("Answer"), "action")))
+    set_text("Level", out(dict_value(var("Answer"), "level")))
+    set_text("Flag", out(dict_value(var("Answer"), "flag")))
+    set_var("Confidence", out(dict_value(var("Answer"), "confidence")))
+    set_text("Reason", out(dict_value(var("Answer"), "reason")))
+    set_text("Src", "model")
+    comment("Safety rules for model decisions: low confidence, IMPORTANT and STARRED stay in the inbox.")
+    c = if_less_than(as_number("Confidence"), as_number("MinConfidence"))
+    set_text("Decision", "KEEP")
+    c.end()
+    for label in ("IMPORTANT", "STARRED"):
+        c = if_text(as_text("Labels"), CONTAINS, label)
+        set_text("Decision", "KEEP")
+        c.end()
+    b.otherwise()
+    set_text("Decision", var("RuleAction"))
+    set_text("Level", var("RuleLevel"))
+    set_text("Flag", var("RuleFlag"))
+    set_text("Confidence", "1")
+    set_text("Reason", "rule: ", var("RuleName"))
+    set_text("Src", "rule")
+    b.end()
+
+    fb.end()
+
+    comment("A message whose metadata couldn't be read stays in the inbox.")
+    b = if_text(as_text("Unreadable"), IS, "yes")
+    set_text("Decision", "KEEP")
+    set_text("Level", "")
+    set_text("Flag", "")
+    set_text("Reason", "couldn't read message")
+    b.end()
+
+    comment("Thread collapse: messages arrive newest first, so a KEEP in an already-kept thread is an older "
+            "one: archive it.")
+    b = if_text(as_text("Decision"), IS, "KEEP")
+    c = if_text(as_text("Forced"), IS_NOT, "yes")
+    c2 = if_text_var(as_text("KeptThreads"), CONTAINS, var("ThreadId"))
+    set_text("Decision", "ARCHIVE")
+    set_text("Reason", "older message in a kept thread")
+    c2.otherwise()
+    set_text("KeptThreads", var("KeptThreads"), " ", var("ThreadId"))
+    c2.end()
+    c.end()
+    b.end()
+
+    comment("Work out the Gmail operation (none, archive or trash) and a note for the log.")
+    set_text("Op", "keep")
+    set_text("Note", "")
+    b = if_text(as_text("Decision"), IS, "ARCHIVE")
+    set_text("Op", "archive")
+    b.end()
+    b = if_text(as_text("Decision"), IS, "DELETE")
+    set_text("Op", "trash")
+    b.end()
+
+    b = if_text(as_text("Decision"), IS, "SUMMARIZE")
+    comment("Fetch the full message as raw JSON text and find the first text/plain part's body at any depth, "
+            "else text/html, else use the snippet. No dotted key paths, so no message shape can stop the run.")
+    full = http("GET", (GMAIL + "/", var("MsgId"), "?format=full"))
+    set_text("FullText", out(add("detect.text", {"WFInput": attachment(out(full))}, "Text")))
+    set_text("IsHTML", "no")
+    set_text("Data", out(regex_replace(var("FullText"),
+        BODY_PLAIN_RE, "$1")))
+    c = if_text(as_text("Data"), BEGINS_WITH, "{")
+    set_text("IsHTML", "yes")
+    set_text("Data", out(regex_replace(var("FullText"),
+        BODY_HTML_RE, "$1")))
+    c.end()
+    comment("No match leaves the JSON unchanged (it starts with '{'): no body part, so use the snippet.")
+    c = if_text(as_text("Data"), BEGINS_WITH, "{")
+    set_text("Data", "")
+    c.end()
+    c = if_no_value(as_text("Data"))
+    set_text("BodyText", var("Snippet"))
+    c.otherwise()
+    comment("Gmail sends base64url without padding: map -_ to +/, pad to a multiple of 4, then decode.")
+    d = replace(var("Data"), "-", "+")
+    d = replace(out(d), "_", "/")
+    d = regex_replace(out(d), PAD2_RE, "$1==")
+    d = regex_replace(out(d), PAD3_RE, "$1=")
+    decoded = add("base64encode", {"WFInput": attachment(out(d)), "WFEncodeMode": "Decode"}, "Base64 Encoded")
+    set_text("Decoded", out(decoded))
+    c2 = if_text(as_text("IsHTML"), IS, "yes")
+    rich = add("getrichtextfromhtml", {"WFHTML": text(var("Decoded"))}, "Rich Text from HTML")
+    set_text("Decoded", out(add("detect.text", {"WFInput": attachment(out(rich))}, "Text")))
+    c2.end()
+    set_text("BodyText", out(regex_replace(var("Decoded"), r"^([\s\S]{3000})[\s\S]*$", "$1")))
+    c.end()
+
+    def summarize(prompt_var):
+        sp = text_action(var(prompt_var), "\n\nFrom: ", var("From"), "\nSubject: ", var("Subject"),
+                         "\n\n", var("BodyText"))
+        set_text("Summary", out(ask_model(out(sp), "Text")))
+        set_text("Summary", out(regex_replace(var("Summary"), r"[\u00a0\u200b\u200c\u200d\ufeff\r]", " ")))
+        set_text("Summary", out(regex_replace(var("Summary"), r"\n\s*\n+", "\n")))
+        set_text("Summary", out(replace(var("Summary"), "&", "＆")))
+
+    for level in LEVELS:
+        c = if_text(as_text("Level"), IS, level)
+        summarize("PSum_" + level)
+        c.end()
+    comment("A confirmation that holds more than a plain notification comes back as HIGH: summarize it as high.")
+    c = if_text(as_text("Level"), IS, "confirmations")
+    c2 = if_text(as_text("Summary"), BEGINS_WITH, "HIGH")
+    set_text("Level", "high")
+    summarize("PSum_high")
+    c2.end()
+    c.end()
+    for level, op in [("low", "trash"), ("moderate", "trash"), ("high", "archive"), ("confirmations", "archive")]:
+        c = if_text(as_text("Level"), IS, level)
+        set_text("Op", op)
+        c.end()
+    set_text("Note", "summary: ", var("Level"))
+    b.end()
+
+    b = if_text(as_text("Decision"), IS, "UNSUBSCRIBE")
+    comment("Only ever POST to a one-click unsubscribe URL (RFC 8058) or draft (never send) a mailto request.")
+    set_text("UnsubURL", out(regex_replace(var("ListUnsub"), UNSUB_HTTPS_RE, "$1")))
+    set_text("MailTo", out(regex_replace(var("ListUnsub"), UNSUB_MAILTO_RE, "$1")))
+    set_text("Method", "manual")
+    c = if_text(as_text("ListUnsub"), CONTAINS, "<mailto:")
+    set_text("Method", "draft")
+    c.end()
+    c = if_text(as_text("UnsubURL"), BEGINS_WITH, "https://")
+    c2 = if_text(as_text("ListUnsubPost"), CONTAINS, "One-Click")
+    set_text("Method", "oneclick")
+    c2.end()
+    c.end()
+    item = text_action("- **", var("SenderName"), "** · ", var("Subject"))
+
+    c = if_text(as_text("Method"), IS, "oneclick")
+    set_text("Note", "would unsubscribe via one-click (dry run or allowUnsubscribe off)")
+    c2 = if_text(as_text("AllowUnsubscribe"), IS, "true")
+    c3 = if_text(as_text("DryRun"), IS_NOT, "true")
+    add("downloadurl", {"WFURL": text(var("UnsubURL")), "WFHTTPMethod": "POST", "ShowHeaders": False,
+                        "WFHTTPBodyType": "Form",
+                        "WFFormValues": fields([("List-Unsubscribe", ("One-Click",))])}, "Contents of URL")
+    set_text("Note", "unsubscribed via one-click")
+    set_text("Op", "archive")
+    c3.end()
+    c2.end()
+    append_var("Unsub_oneclick", out(text_action(out(item), " (", var("Note"), ")")))
+    c.end()
+
+    c = if_text(as_text("Method"), IS, "draft")
+    comment("Subject and body from the mailto query if present, else 'unsubscribe'.")
+    set_text("MailSubject", "unsubscribe")
+    set_text("MailBody", "unsubscribe")
+    for field, name in [("subject", "MailSubject"), ("body", "MailBody")]:
+        pattern = r"^[\s\S]*?<mailto:[^>?]+\?(?:[^>]*&)?" + field + r"=([^&>]*)[\s\S]*$"
+        q = regex_replace(var("ListUnsub"), pattern, "$1")
+        c2 = if_text(out(q), IS_NOT, "")
+        c3 = if_text(out(q), CONTAINS, "mailto:")
+        c3.otherwise()
+        set_text(name, out(add("urlencode", {"WFInput": text(out(q)), "WFEncodeMode": "Decode"}, "URL Encoded Text")))
+        c3.end()
+        c2.end()
+    set_text("Note", "would draft unsubscribe email to ", var("MailTo"), " (dry run or allowUnsubscribe off)")
+    c2 = if_text(as_text("AllowUnsubscribe"), IS, "true")
+    c3 = if_text(as_text("DryRun"), IS_NOT, "true")
+    raw = text_action("To: ", var("MailTo"), "\r\nSubject: ", var("MailSubject"),
+                      "\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n", var("MailBody"), "\r\n")
+    enc = add("base64encode", {"WFInput": attachment(out(raw)), "WFEncodeMode": "Encode",
+                               "WFBase64LineBreakMode": "None"}, "Base64 Encoded")
+    r = replace(out(enc), "+", "-")
+    r = replace(out(r), "/", "_")
+    r = replace(out(r), "=", "")
+    draft = text_action('{"message":{"raw":"', out(r), '"}}')
+    http("POST", ("https://gmail.googleapis.com/gmail/v1/users/me/drafts",), json_text=draft)
+    set_text("Note", "drafted unsubscribe email to ", var("MailTo"), " (not sent)")
+    set_text("Op", "archive")
+    c3.end()
+    c2.end()
+    append_var("Unsub_draft", out(text_action(out(item), " → ", var("MailTo"), " (", var("Note"), ")")))
+    c.end()
+
+    c = if_text(as_text("Method"), IS, "manual")
+    set_text("Note", "manual unsubscribe: ", var("ListUnsub"))
+    set_text("Op", "keep")
+    append_var("Unsub_manual", out(text_action(out(item), " · ", var("ListUnsub"))))
+    c.end()
+    b.end()
+
+    b = if_text(as_text("Op"), IS, "trash")
+    c = if_text(as_text("AllowDelete"), IS_NOT, "true")
+    set_text("Op", "archive")
+    set_text("Note", var("Note"), " (delete->archive: allowDelete off)")
+    c.end()
+    b.end()
+
+    comment("Report line: 'Sender — Subject · ACTION·level · op · src · id:<id>'. Feedback: type x at the start.")
+    set_text("LevelTag", "")
+    b = if_has_value(as_text("Level"))
+    set_text("LevelTag", "·", var("Level"))
+    b.end()
+    set_text("Item", var("SenderName"), " — ", var("Subject"), " · ", var("Decision"), var("LevelTag"), " · ",
+             var("Op"), " · ", var("Src"), " · id:", var("MsgId"))
+    b = if_text(as_text("Flag"), IS, "needs-you")
+    append_var("NeedsYou", out(text_action(var("Item"), "\n", var("Links"), "\n")))
+    b.end()
+    for decision, group in [("KEEP", "G_kept"), ("ARCHIVE", "G_archived"), ("DELETE", "G_trashed"),
+                            ("UNSUBSCRIBE", "G_unsub")]:
+        b = if_text(as_text("Decision"), IS, decision)
+        append_var(group, out(text_action(var("Item"), "\n", var("Links"), "\n")))
+        b.end()
+    b = if_text(as_text("Decision"), IS, "SUMMARIZE")
+    for level in LEVELS:
+        c = if_text(as_text("Level"), IS, level)
+        append_var("Sum_" + level, out(text_action(var("Item"), "\n", var("Summary"), "\n", var("Links"), "\n")))
+        c.end()
+    b.end()
+    line = text_action(var("Decision"), "\t", var("Level"), "\t", var("Flag"), "\t", var("Src"), "\t",
+                       var("Confidence"), "\t",
+                       var("Op"), "\t", var("Date"), "\t", var("From"), "\t", var("Subject"), "\t", var("Reason"), "\t",
+                       var("Note"), "\t", var("MsgId"), "\t", var("Link"))
+    append_var("Log", out(line))
+    for decision in DECISIONS:
+        c = if_text(as_text("Decision"), IS, decision)
+        append_var("N_" + decision, var("MsgId"))
+        c.end()
+
+    comment("Act unless dryRun is \"true\". Changes add the AutoTriage label (undo: label:AutoTriage); "
+            "kept mail gets AutoTriage/Kept.")
+    live = if_text(as_text("DryRun"), IS_NOT, "true")
+    b = if_text(as_text("Forced"), IS, "yes")
+    http("POST", (GMAIL + "/", var("MsgId"), "/untrash"))
+    b.end()
+    b = if_text(as_text("Op"), IS, "keep")
+    body = text_action('{"addLabelIds":["INBOX","', var("KeptLabel"), '"],"removeLabelIds":["',
+                       var("AuditLabel"), '"]}')
+    http("POST", (GMAIL + "/", var("MsgId"), "/modify"), json_text=body)
+    b.end()
+    b = if_text(as_text("Op"), IS, "archive")
+    body = text_action('{"removeLabelIds":["INBOX","', var("KeptLabel"), '"],"addLabelIds":["',
+                       var("AuditLabel"), '"]}')
+    http("POST", (GMAIL + "/", var("MsgId"), "/modify"), json_text=body)
+    b.end()
+    b = if_text(as_text("Op"), IS, "trash")
+    body = text_action('{"removeLabelIds":["', var("KeptLabel"), '"],"addLabelIds":["', var("AuditLabel"), '"]}')
+    http("POST", (GMAIL + "/", var("MsgId"), "/modify"), json_text=body)
+    http("POST", (GMAIL + "/", var("MsgId"), "/trash"))
+    b.end()
+    live.end()
+
+    loop.end()
+
+    comment("Machine log for tuning (overwritten each run), then the per-run report as a note.")
+    save_file(out(text_action(var("Log"))), "EmailTriage/log/last-run.txt")
+    # (variable, live heading, dry-run heading)
+    SECTIONS = [("NeedsYou", "Needs you", "Needs you"), ("G_kept", "Kept", "Would keep"),
+                ("G_archived", "Archived", "Would archive"), ("G_trashed", "Trashed", "Would trash")] + \
+               [("Sum_" + lvl, "Summarized: " + t, "Would summarize: " + t)
+                for lvl, t in [("high", "High"), ("moderate", "Moderate"), ("low", "Low"),
+                             ("confirmations", "Confirmations")]] + \
+               [("G_unsub", "Unsubscribed", "Would unsubscribe"),
+                ("Unsub_oneclick", "Unsubscribe detail: one-click", "Unsubscribe detail: one-click"),
+                ("Unsub_draft", "Unsubscribe detail: email drafts", "Unsubscribe detail: email drafts"),
+                ("Unsub_manual", "Unsubscribe detail: manual", "Unsubscribe detail: manual")]
+    for v, _, _ in SECTIONS:
+        b = if_has_value(var(v))
+        set_text("T_" + v, var(v))
+        b.otherwise()
+        set_text("T_" + v, "None")
+        b.end()
+    counts = {d: add("count", {"WFCountType": "Items", "Input": attachment(var("N_" + d)),
+                               "WFInput": attachment(var("N_" + d))}, "Count") for d in DECISIONS}
+    b = if_text(as_text("DryRun"), IS, "true")
+    set_text("Title", "Inbox Triage, ", var("NoteTime"), " ", var("RunLabel"), " (dry run)")
+    set_text("Prefix", "DRY RUN: nothing was changed in Gmail. This shows what would happen. Would: ")
+    for v, _, dry in SECTIONS:
+        set_text("H_" + v, dry)
+    b.otherwise()
+    set_text("Title", "Inbox Triage, ", var("NoteTime"), " ", var("RunLabel"))
+    set_text("Prefix", "Done: ")
+    for v, live, _ in SECTIONS:
+        set_text("H_" + v, live)
+    b.end()
+    count_parts = [var("Prefix")]
+    for i, d in enumerate(DECISIONS):
+        count_parts += [("" if i == 0 else ", ") + d.lower() + " ", out(counts[d])]
+    set_text("Counts", *count_parts)
+    md = ["# ", var("Title"), "\n\n", var("Counts"), "\n\nBypassed: ", var("Bypassed"),
+          " kept messages still in the inbox (label AutoTriage/Kept).\n\n", FEEDBACK_HELP, "\n\n"]
+    for v, _, _ in SECTIONS:
+        md += ["## ", var("H_" + v), "\n\n", var("T_" + v), "\n\n"]  # items are separated by blank lines
+    report = text_action(*md)
+    comment("Fallback copy of the report, in case the note can't be created.")
+    save_file(out(report), "EmailTriage/log/last-report.txt")
+    add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
+                                                   "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    add("notification", {"WFNotificationActionTitle": text("Inbox Triage"),
+                         "WFNotificationActionBody": text(var("Counts"))})
+
+
+def apply_lines(body_name, item="Repeat Item"):
+    """Parse report lines that start with a two-letter feedback code; collect forced decisions."""
+    lines = add("text.split", {"text": text(var(body_name)), "WFTextSeparator": "New Lines"}, "Split Text")
+    ll = repeat_each(out(lines))
+    set_text("Line", var(item))
+    set_text("Mark", out(regex_replace(var("Line"), FEEDBACK_MARK_RE, "MARKED")))
+    c = if_text(as_text("Mark"), IS, "MARKED")
+    append_var("TaggedList", var("Line"))
+    set_text("Id", out(regex_replace(var("Line"), FEEDBACK_ID_RE, "$1")))
+    set_text("Original", out(regex_replace(var("Line"), FEEDBACK_ORIGINAL_RE, "$1")))
+    set_text("Corrected", "")
+    for code, value in FEEDBACK_CODES:
+        hit = regex_replace(var("Line"), feedback_code_re(code), "HIT")
+        c2 = if_text(out(hit), IS, "HIT")
+        set_text("Corrected", value)
+        c2.end()
+    comment("Skip corrections already applied (same id and same correction).")
+    c2 = if_text_var(as_text("Applied"), CONTAINS, "id:", var("Id"), "=", var("Corrected"), ";")
+    append_var("SkippedList", var("Id"))
+    c2.otherwise()
+    c3 = if_text(as_text("Corrected"), IS, "RELEASE")
+    comment("Release from Kept: remove the label so the next run triages it again.")
+    c4 = if_text(as_text("DryRun"), IS_NOT, "true")
+    set_text("AccessToken", out(run_shortcut(TOKEN)))
+    body = text_action('{"removeLabelIds":["', var("KeptLabel"), '"]}')
+    http("POST", (GMAIL + "/", var("Id"), "/modify"), json_text=body)
+    c4.end()
+    c3.otherwise()
+    set_text("Ids", var("Ids"), var("Id"), ",")
+    set_text("Force", var("Force"), var("Id"), "=", var("Corrected"), ";")
+    c3.end()
+    set_text("Applied", var("Applied"), "id:", var("Id"), "=", var("Corrected"), ";\n")
+    comment("For the rule proposals: sender address, the item text, and any words written after the id.")
+    meta = http("GET", (GMAIL + "/", var("Id"), "?format=metadata&metadataHeaders=From"))
+    set_text("MetaText", out(add("detect.text", {"WFInput": attachment(out(meta))}, "Text")))
+    set_text("FromAddr", out(regex_replace(var("MetaText"),
+        FROM_HEADER_RE, "$1")))
+    c3 = if_text(as_text("FromAddr"), BEGINS_WITH, "{")
+    set_text("FromAddr", "")
+    c3.end()
+    comment("Google's JSON escapes < > & = and quotes; turn them back.")
+    for esc, ch in [("\\u003c", "<"), ("\\u003e", ">"), ("\\u0026", "&"), ("\\u003d", "="), ('\\"', '"')]:
+        set_text("FromAddr", out(replace(var("FromAddr"), esc, ch)))
+    set_text("ItemText", out(regex_replace(var("Line"), FEEDBACK_ITEM_RE, "$1")))
+    comment("The hint is the text between the code and the first ')'.")
+    set_text("Extra", out(regex_replace(var("Line"), FEEDBACK_HINT_RE, "$1")))
+    set_text("Corrections", var("Corrections"), "- from: ", var("FromAddr"), " | ", var("ItemText"), " | was: ",
+             var("Original"), " | now: ", var("Corrected"), " | hint: ", var("Extra"), "\n")
+    set_text("Pending", var("Pending"), var("Today"), "\t", var("Source"), "\t", var("Id"), "\t", var("Original"),
+             "\t", var("Corrected"), "\t", var("Line"), "\n")
+    entry = regex_replace(var("Line"), r"^[^)]*\)\s*", "")
+    set_text("Done", var("Done"), "✓ ", var("Corrected"), " ← ", out(entry), "\n")
+    c2.end()
+    c.end()
+    ll.end()
+
+
+def finish_feedback():
+    """Record corrections, ask for rule proposals, re-run the engine on forced ids, then mark them applied.
+    The engine runs last and 'applied' is saved after it, so a failed run can simply be shared again."""
+    c = if_has_value(as_text("Pending"))
+    old = get_file("EmailTriage/feedback/pending.tsv", required=False)
+    save_file(out(text_action(out(old), var("Pending"))), "EmailTriage/feedback/pending.tsv")
+    c.end()
+    set_text("Proposals", "No corrections, so no proposals.")
+    c = if_has_value(as_text("Corrections"))
+    comment("Ask the model for rule changes from these corrections. They are only proposed, never applied.")
+    rules_text = text_action(out(get_file("EmailTriage/rules.json")))
+    ask_text = text_action(
+        "You maintain the email triage rules for the user. Below are the current rules (JSON) and corrections the user "
+        "just made to the triage. Propose rule changes so that these corrections happen automatically next time. "
+        "Sender rules match when the From header contains 'from' (use the exact address, or a narrow mail "
+        "subdomain) and, if 'subject' is set, the Subject contains it. Content rules match when the subject or "
+        "snippet contains 'keyword'. Only propose a rule the corrections support. Actions: KEEP, ARCHIVE, DELETE, "
+        "UNSUBSCRIBE, SUMMARIZE (level low, moderate, high or confirmations).\n\n"
+        "Reply with ONLY this JSON, no code fences:\n"
+        '{"sender_rules": [{"from": "", "subject": "", "action": "", "level": "", "reason": "one line"}], '
+        '"content_rules": [{"keyword": "", "action": "", "level": "", "reason": "one line"}]}\n\n'
+        "Current rules:\n", out(rules_text), "\n\nCorrections:\n", var("Corrections"))
+    set_var("ModelStart", out(fmt_date("h:mm:ss a")))
+    m = if_text(as_text("FeedbackModel"), IS, "apple")
+    set_text("Reply", out(ask_model(out(ask_text), "Text")))
+    set_text("ModelName", "Apple on-device (Use Model)")
+    m.otherwise()
+    set_text("Reply", out(ask_locally(out(ask_text))))
+    set_text("ModelName", "Locally AI, Ternary Bonsai 2 (9B)")
+    m.end()
+    set_var("ModelEnd", out(fmt_date("h:mm:ss a")))
+    set_text("Reply", out(regex_replace(var("Reply"), r"```(?:json)?", "")))
+    set_text("Json", out(regex_replace(var("Reply"), r"^[\s\S]*?(\{[\s\S]*\})[\s\S]*$", "$1")))
+    comment("No dictionary parse here: Get Dictionary Value on a non-JSON reply stops the shortcut. Check the "
+            "shape with patterns only; bin/learn parses the saved JSON on the Mac.")
+    set_text("Parsed", "no")
+    c2 = if_text(as_text("Json"), BEGINS_WITH, "{")
+    c3 = if_text(as_text("Json"), CONTAINS, "_rules")
+    set_text("Parsed", "yes")
+    c3.end()
+    c2.end()
+    c2 = if_text(as_text("Parsed"), IS, "yes")
+    save_file(out(text_action(var("Json"))), "EmailTriage/feedback/proposed-rules.json")
+    set_text("Proposals", "Saved to feedback/proposed-rules.json. Nothing is applied until you approve "
+             "(bin/learn on the Mac).\n\n", var("Json"))
+    c2.otherwise()
+    set_text("Proposals", "Model output unparseable, so there are no proposals. The corrections above were "
+             "still applied. Raw reply:\n\n", var("Reply"))
+    c2.end()
+    set_text("Proposals", "Model: ", var("ModelName"), ", ", var("ModelStart"), " to ", var("ModelEnd"), ".\n\n",
+             var("Proposals"))
+    c.end()
+    c = if_has_value(as_text("Ids"))
+    set_text("Ids", out(regex_replace(var("Ids"), ",$", "")))
+    run_shortcut(ENGINE, out(dictionary([("ids", (var("Ids"),)), ("force", (var("Force"),)),
+                                         ("label", ("feedback",))])))
+    c.end()
+    c = if_has_value(as_text("Pending"))
+    save_file(out(text_action(var("Applied"))), "EmailTriage/feedback/applied.txt")
+    c.end()
+    c = if_has_value(as_text("Done"))
+    set_text("Title", "Inbox Triage feedback applied, ", var("NoteTime"))
+    report = text_action("# ", var("Title"), "\n\nFrom: ", var("Source"), "\n\n", var("Done"),
+                         "\n\n## Proposed rule changes (need your OK)\n\n", var("Proposals"))
+    add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
+                                                   "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    c.otherwise()
+    n_tagged = add("count", {"WFCountType": "Items", "Input": attachment(var("TaggedList")),
+                             "WFInput": attachment(var("TaggedList"))}, "Count")
+    n_skipped = add("count", {"WFCountType": "Items", "Input": attachment(var("SkippedList")),
+                              "WFInput": attachment(var("SkippedList"))}, "Count")
+    start = regex_replace(var("Source"), r"^([\s\S]{0,120})[\s\S]*$", "$1")
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+                  "WFAlertActionMessage": text(
+                      "No new feedback lines. Start a line with a code and ), e.g. xa) or xm a hint) "
+                      "(codes xk, xa, xd, xl, xm, xh, xc, xu, xr).\n\nTagged lines found: ", out(n_tagged),
+                      ". Already applied: ", out(n_skipped), ".\nNote: ", out(start))})
+    c.end()
+
+
+def build_front():
+    comment("InboxTriage: menu, Kept view, Custom runs and feedback. Input 'default' (the automation) skips the "
+            "menu. A note shared from the share sheet applies the feedback lines in it.")
+    set_var("Config", out(to_dict(out(get_file("EmailTriage/config.json")))))
+    set_text("DryRun", out(dict_value(var("Config"), "dryRun")))
+    set_text("KeptLabel", out(dict_value(var("Config"), "keptLabelId")))
+    set_text("FeedbackModel", out(dict_value(var("Config"), "feedbackModel")))
+    set_var("NoteTime", out(fmt_date("EEE MMM d h:mm a")))
+    set_var("Today", out(fmt_date("yyyy-MM-dd HH:mm")))
+    for name in ("Ids", "Force", "Pending", "Done", "Corrections"):
+        set_text(name, "")
+    set_text("Input", {"Type": "ExtensionInput"})
+    b = if_text(as_text("Input"), IS, "default")
+    set_text("Mode", "default")
+    b.otherwise()
+    c = if_text(as_text("Input"), CONTAINS, "id:")
+    set_text("Mode", "shared")
+    c.otherwise()
+    m = Menu("Inbox Triage", ["Default", "Kept", "Custom", "Apply feedback (newest notes)", "Clean up old reports"])
+    for title, mode in [("Default", "default"), ("Kept", "kept"), ("Custom", "custom"),
+                        ("Apply feedback (newest notes)", "feedback"), ("Clean up old reports", "cleanup")]:
+        m.item(title)
+        set_text("Mode", mode)
+    m.end()
+    c.end()
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "default")
+    run_shortcut(ENGINE, out(dictionary([("label", ("",))])))
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "custom")
+    batch = ask("Batch size (messages)", "Number", "25")
+    hours = ask("Skip mail newer than this many hours", "Number", "24")
+    extra = ask("Extra Gmail search for this run (optional, e.g. from:linkedin.com)", "Text")
+    for key, question, default in [("dryRun", "Dry run? (nothing changes in Gmail)", "Yes"),
+                                   ("recheckKept", "Re-check messages already marked Kept?", "No"),
+                                   ("allowDelete", "Allow moving to Trash this run?", "No"),
+                                   ("allowUnsubscribe", "Allow unsubscribing this run?", "No")]:
+        m = Menu(question, ["Yes", "No"] if default == "Yes" else ["No", "Yes"])
+        for title in (["Yes", "No"] if default == "Yes" else ["No", "Yes"]):
+            m.item(title)
+            set_text("A_" + key, "true" if title == "Yes" else "false")
+        m.end()
+    params = dictionary([("maxMessages", (out(batch),)), ("ignoreHours", (out(hours),)), ("extraQuery", (out(extra),)),
+                         ("dryRun", (var("A_dryRun"),)), ("recheckKept", (var("A_recheckKept"),)),
+                         ("allowDelete", (var("A_allowDelete"),)), ("allowUnsubscribe", (var("A_allowUnsubscribe"),)),
+                         ("label", ("custom",))])
+    run_shortcut(ENGINE, out(params))
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "kept")
+    set_text("AccessToken", out(run_shortcut(TOKEN)))
+    c = if_no_value(as_text("AccessToken"))
+    add("exit", {})
+    c.end()
+    listing = http("GET", (GMAIL + "?maxResults=100&q=in%3Ainbox%20label%3Aautotriage-kept",))
+    set_var("Messages", out(dict_value(out(listing), "messages")))
+    loop = repeat_each(var("Messages"))
+    set_text("MsgId", out(dict_value(var("Repeat Item"), "id")))
+    msg = http("GET", (GMAIL + "/", var("MsgId"), "?format=metadata&metadataHeaders=From&metadataHeaders=Subject"
+                       "&metadataHeaders=Message-ID"))
+    set_var("Msg", out(msg))
+    for name in ("From", "Subject", "MessageIdHdr"):
+        set_text(name, "")
+    set_var("Payload", out(dict_value(var("Msg"), "payload")))
+    pb = if_has_value(var("Payload"))
+    headers = repeat_each(out(dict_value(var("Payload"), "headers")))
+    set_var("HName", out(dict_value(var("Repeat Item 2"), "name")))
+    set_var("HValue", out(dict_value(var("Repeat Item 2"), "value")))
+    for header, name in (("From", "From"), ("Subject", "Subject"), ("Message-ID", "MessageIdHdr"),
+                         ("Message-Id", "MessageIdHdr")):
+        c = if_text(as_text("HName"), IS, header)
+        set_var(name, var("HValue"))
+        c.end()
+    headers.end()
+    pb.end()
+    set_text("SenderName", out(regex_replace(var("From"), SENDER_NAME_RE, "$1")))
+    comment("A bare address at the start of a line made Notes' Markdown import leave a large gap: "
+            "show it as 'name (domain)' instead.")
+    set_text("SenderName", out(regex_replace(var("SenderName"), BARE_ADDRESS_RE, "$1 ($2)")))
+    for name in ("SenderName", "Subject"):
+        set_text(name, out(regex_replace(var(name), r"[\s\u00a0\u200b\u200c\u200d\ufeff]+", " ")))
+        set_text(name, out(replace(var(name), "&", "＆")))
+    set_text("MessageIdHdr", out(regex_replace(var("MessageIdHdr"), r"\s+", "")))
+    mid = add("urlencode", {"WFInput": text(var("MessageIdHdr"))}, "URL Encoded Text")
+    append_var("KeptItems", out(text_action(var("SenderName"), " — ", var("Subject"), " · KEEP · keep · kept · id:",
+                                            var("MsgId"), "\n[Open in Mail](message://", out(mid), ")\n")))
+    loop.end()
+    c = if_has_value(var("KeptItems"))
+    set_text("KeptText", var("KeptItems"))
+    c.otherwise()
+    set_text("KeptText", "No kept messages in the inbox.")
+    c.end()
+    set_text("Title", "Inbox Triage Kept, ", var("NoteTime"))
+    report = text_action("# ", var("Title"), "\n\n", FEEDBACK_HELP, "\n\n", var("KeptText"))
+    add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
+                                                   "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "shared")
+    comment("A report note shared to this shortcut: apply its feedback lines.")
+    set_text("Body", var("Input"))
+    set_text("AccessToken", out(run_shortcut(TOKEN)))
+    set_text("Applied", out(get_file("EmailTriage/feedback/applied.txt", required=False)))
+    set_text("Source", out(regex_replace(var("Body"), r"^#?\s*([^\n]*)[\s\S]*$", "$1")))
+    apply_lines("Body")
+    finish_feedback()
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "feedback")
+    comment("Fallback: read the 10 newest Inbox Triage notes.")
+    set_text("AccessToken", out(run_shortcut(TOKEN)))
+    set_text("Applied", out(get_file("EmailTriage/feedback/applied.txt", required=False)))
+    notes = add("filter.notes", {
+        "WFContentItemFilter": {"Value": {"WFActionParameterFilterPrefix": 1, "WFContentPredicateBoundedDate": False,
+                                          "WFActionParameterFilterTemplates": [
+                                              {"Operator": 99, "Property": "Name", "Removable": True,
+                                               "Values": {"String": "Inbox Triage", "Unit": 4}}]},
+                                "WFSerializationType": "WFContentPredicateTableTemplate"},
+        "WFContentItemSortProperty": "Last Modified Date", "WFContentItemSortOrder": "Latest First",
+        "WFContentItemLimitEnabled": True, "WFContentItemLimitNumber": 10}, "Notes")
+    nl = repeat_each(out(notes))
+    set_text("NoteBody", prop("Repeat Item", "Body"))
+    set_text("Source", prop("Repeat Item", "Name"))
+    apply_lines("NoteBody", item="Repeat Item 2")
+    nl.end()
+    finish_feedback()
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "cleanup")
+    comment("Delete Inbox Triage notes created more than 7 days ago (asks before deleting).")
+    cutoff = add("adjustdate", {"WFDate": text({"Type": "CurrentDate"}), "WFAdjustOperation": "Subtract",
+                                "WFDuration": {"Value": {"Magnitude": 7, "Unit": "days"},
+                                               "WFSerializationType": "WFQuantityFieldValue"}}, "Adjusted Date")
+    old_notes = add("filter.notes", {
+        "WFContentItemFilter": {"Value": {"WFActionParameterFilterPrefix": 1, "WFContentPredicateBoundedDate": False,
+                                          "WFActionParameterFilterTemplates": [
+                                              {"Operator": 99, "Property": "Name", "Removable": True,
+                                               "Values": {"String": "Inbox Triage", "Unit": 4}},
+                                              {"Operator": 1003, "Property": "Creation Date", "Removable": True,
+                                               "Values": {"Date": "2000-01-01T00:00:00Z",
+                                                          "AnotherDate": attachment(out(cutoff))}}]},
+                                "WFSerializationType": "WFContentPredicateTableTemplate"},
+        "WFContentItemSortProperty": "Creation Date", "WFContentItemSortOrder": "Oldest First"}, "Notes")
+    count = add("count", {"WFCountType": "Items", "Input": attachment(out(old_notes)),
+                          "WFInput": attachment(out(old_notes))}, "Count")
+    add("com.apple.Notes.DeleteNotesLinkAction", {"entities": attachment(out(old_notes))})
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+                  "WFAlertActionMessage": text("Deleted ", out(count), " report notes older than 7 days.")})
+    b.end()
+
+def main():
+    os.makedirs(BUILD, exist_ok=True)
+    build_token()
+    write_shortcut(TOKEN)
+    build_engine()
+    write_shortcut(ENGINE, ["WFDictionaryContentItem"])
+    build_front()
+    # Share Sheet: a report note arrives as a note or as (rich) text.
+    write_shortcut(FRONT, ["WFNoteContentItem", "WFRichTextContentItem", "WFStringContentItem"], ["ActionExtension"])
+
+
+if __name__ == "__main__":
+    main()
