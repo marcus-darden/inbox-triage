@@ -75,7 +75,7 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## The feedback loop
 
-Start a report line with a code, an optional hint, and `)`, then share the note to InboxTriage:
+After each run the **review page** opens in the browser: a card per message with decision buttons and a hint field, and one Submit that hands the corrections back to the shortcut. The data rides in the link after `#`, so it never reaches a server. Or, in the report note, start a line with a code, an optional hint, and `)`, then share the note to InboxTriage:
 
 | Code | Meaning |
 |---|---|
@@ -113,7 +113,7 @@ bin/triage-table     prints the last run as a Markdown table
 bin/build-demo       builds InboxTriage Demo: three Notes with made-up messages, for screenshots
 icloud/              example config, example rules, and the prompts the model reads
 tests/               pytest: plist invariants, regex patterns, bin/learn
-docs/                architecture, setup, feedback, lessons learned, and the OAuth home and privacy pages
+docs/                architecture, setup, feedback, lessons learned, the review page, and the OAuth home and privacy pages
 ```
 
 Development: `pip install pytest ruff && ruff check . && pytest`. CI runs both on every push. Signing needs macOS (`shortcuts sign`).

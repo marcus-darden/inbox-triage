@@ -31,6 +31,9 @@ CONFIG_FOLDER = {
     "filename": "inbox-triage", "displayName": "inbox-triage",
 }
 
+# The review page (docs/review.html on GitHub Pages). config.json "reviewUrl" overrides it for a fork.
+REVIEW_URL = "https://marcus-darden.github.io/inbox-triage/review.html"
+
 LEVELS = ["low", "moderate", "high", "confirmations"]
 DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
 
@@ -302,6 +305,57 @@ def repeat_each(ref):
     return Block("repeat.each", {"WFInput": attachment(ref)}, "Repeat Results")
 
 
+def load_review_config():
+    """ReviewUI ("web", "notes" or "both"; default both) and ReviewBase (the review page URL)."""
+    set_text("ReviewUI", out(dict_value(var("Config"), "reviewUI")))
+    b = if_no_value(as_text("ReviewUI"))
+    set_text("ReviewUI", "both")
+    b.end()
+    set_text("ReviewBase", out(dict_value(var("Config"), "reviewUrl")))
+    b = if_no_value(as_text("ReviewBase"))
+    set_text("ReviewBase", REVIEW_URL)
+    b.end()
+
+
+def show_report(title_ref, body_ref, allow_web_ref=None):
+    """The report as a note and/or the review page, per ReviewUI. The page gets '# Title' plus the report,
+    zipped (Make Archive) and base64url-encoded after '#v1.' in the link, so it never reaches a server."""
+    set_text("ReviewLink", "")
+    set_text("ShowWeb", "no")
+    b = if_text(as_text("ReviewUI"), IS_NOT, "notes")
+    set_text("ShowWeb", "yes")
+    b.end()
+    if allow_web_ref is not None:
+        b = if_text(allow_web_ref, IS, "no")
+        set_text("ShowWeb", "no")
+        b.end()
+    b = if_text(as_text("ShowWeb"), IS, "yes")
+    full = text_action("# ", title_ref, "\n\n", body_ref)
+    arc = add("makezip", {"WFInput": attachment(out(full)), "WFZIPName": "report"}, "Archive")
+    enc = add("base64encode", {"WFInput": attachment(out(arc)), "WFEncodeMode": "Encode",
+                               "WFBase64LineBreakMode": "None"}, "Base64 Encoded")
+    r = replace(out(enc), "+", "-")
+    r = replace(out(r), "/", "_")
+    r = replace(out(r), "=", "")
+    set_text("ReviewURL", var("ReviewBase"), "#v1.", out(r))
+    set_text("ReviewLink", "[Review and correct in the browser](", var("ReviewURL"), ")\n\n")
+    b.end()
+    b = if_text(as_text("ReviewUI"), IS_NOT, "web")
+    note = text_action(var("ReviewLink"), body_ref)
+    c = if_text(as_text("ShowWeb"), IS, "yes")
+    add("com.apple.mobilenotes.SharingExtension", {"name": text(title_ref), "WFCreateNoteInput": text(out(note)),
+                                                   "interpretAsMarkdown": True, "OpenWhenRun": False}, "Note")
+    c.otherwise()
+    add("com.apple.mobilenotes.SharingExtension", {"name": text(title_ref), "WFCreateNoteInput": text(out(note)),
+                                                   "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    c.end()
+    b.end()
+    b = if_text(as_text("ShowWeb"), IS, "yes")
+    url = add("url", {"WFURLActionURL": text(var("ReviewURL"))}, "URL")
+    add("openurl", {"WFInput": attachment(out(url))})
+    b.end()
+
+
 
 TOKEN, ENGINE, FRONT = "InboxTriage Token", "InboxTriage Engine", "InboxTriage"
 FEEDBACK_CODES = [("k", "KEEP"), ("a", "ARCHIVE"), ("d", "DELETE"), ("l", "SUMMARIZE low"),
@@ -428,6 +482,7 @@ def build_engine():
                       ("minConfidence", "MinConfidence"), ("maxMessages", "MaxMessages"), ("query", "Query"),
                       ("auditLabelId", "AuditLabel"), ("keptLabelId", "KeptLabel"), ("ignoreHours", "IgnoreHours")]:
         set_var(name, out(dict_value(var("Config"), key)))
+    load_review_config()
     comment("Per-run overrides from the InboxTriage menu (Custom, Apply feedback). Empty for a default run.")
     set_var("Params", out(to_dict({"Type": "ExtensionInput"})))
     for key, name in [("maxMessages", "MaxMessages"), ("ignoreHours", "IgnoreHours"), ("dryRun", "DryRun"),
@@ -901,8 +956,12 @@ def build_engine():
     report = text_action(*md)
     comment("Fallback copy of the report, in case the note can't be created.")
     save_file(out(text_action("# ", var("Title"), "\n\n", out(report))), "EmailTriage/log/last-report.txt")
-    add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
-                                                   "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    comment("Feedback runs (from the review page or a shared note) don't open the page again.")
+    set_text("AllowWeb", "yes")
+    b = if_text(as_text("RunLabel"), IS, "feedback")
+    set_text("AllowWeb", "no")
+    b.end()
+    show_report(var("Title"), out(report), as_text("AllowWeb"))
     add("notification", {"WFNotificationActionTitle": text("Inbox Triage"),
                          "WFNotificationActionBody": text(var("Counts"))})
 
@@ -1051,6 +1110,7 @@ def build_front():
     set_text("DryRun", out(dict_value(var("Config"), "dryRun")))
     set_text("KeptLabel", out(dict_value(var("Config"), "keptLabelId")))
     set_text("FeedbackModel", out(dict_value(var("Config"), "feedbackModel")))
+    load_review_config()
     set_var("NoteTime", out(fmt_date("EEE MMM d h:mm a")))
     set_var("Today", out(fmt_date("yyyy-MM-dd HH:mm")))
     for name in ("Ids", "Force", "Pending", "Done", "Corrections"):
@@ -1139,9 +1199,8 @@ def build_front():
     set_text("KeptText", "No kept messages in the inbox.")
     c.end()
     set_text("Title", "Inbox Triage Kept, ", var("NoteTime"))
-    report = text_action(FEEDBACK_HELP, "\n\n", var("KeptText"))
-    add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
-                                                   "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    report = text_action(FEEDBACK_HELP, "\n\n## Kept\n\n", var("KeptText"))
+    show_report(var("Title"), out(report))
     b.end()
 
     b = if_text(as_text("Mode"), IS, "shared")

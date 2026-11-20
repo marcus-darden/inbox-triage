@@ -9,7 +9,7 @@ KNOWN_ACTIONS = {
         "conditional", "count", "detect.dictionary", "detect.text", "dictionary", "documentpicker.open",
         "documentpicker.save", "downloadurl", "exit", "filter.notes", "format.date", "getrichtextfromhtml",
         "gettext", "getvalueforkey", "notification", "output", "repeat.each", "runworkflow", "setvariable",
-        "text.replace", "text.split", "urlencode", "ask", "adjustdate",
+        "text.replace", "text.split", "urlencode", "ask", "adjustdate", "makezip", "openurl", "url",
     ]
 } | {
     "com.apple.mobilenotes.SharingExtension",       # Create Note

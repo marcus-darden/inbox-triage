@@ -50,6 +50,8 @@ local/prompts/*.txt      optional overrides of icloud/prompts/*.txt
 | `query` | `in:inbox -is:starred` | Base Gmail search. |
 | `auditLabelId`, `keptLabelId` | set by `bin/gmail-auth` | Ids of `AutoTriage` and `AutoTriage/Kept`. |
 | `feedbackModel` | `"locally"` | Model for rule proposals: `"locally"` or `"apple"`. |
+| `reviewUI` | `"both"` | Where a run's report goes: `"both"` (review page and note), `"web"` or `"notes"`. |
+| `reviewUrl` | this repo's Pages | The review page. A fork can serve its own `docs/review.html`. |
 
 ## 4. Build and deploy (Mac)
 

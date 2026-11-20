@@ -23,6 +23,11 @@ jobs:
       - run: pip install pytest ruff
       - name: Lint
         run: ruff check .
-      - name: Test (generator invariants, patterns, bin/learn)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test (generator invariants, patterns, bin/learn, review page round trip)
         run: pytest -q
+      - name: Test the review page (node)
+        run: node --test tests/
       # Signing (shortcuts sign) needs macOS and an Apple account; it is a release step on the Mac.

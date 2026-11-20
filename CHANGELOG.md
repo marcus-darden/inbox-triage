@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- Review page: after a Default or Kept run, the Engine opens `docs/review.html` (GitHub Pages) in the browser with the run's report zipped and base64url-encoded after `#v1.` in the link, so it never reaches a server. Each message is a card with decision buttons and a hint field. Submit runs InboxTriage with the corrections as tagged report lines, the same format and parser as a shared note.
+- `reviewUI` config: `"both"` (default: page and note), `"web"` or `"notes"`. `reviewUrl` points a fork at its own page. The note starts with a link to the page.
+- Tests for the page (node: payload decoding, report parsing, Submit text) and a Python round trip through the shortcut's feedback patterns. CI runs both.
+
 ## 0.1.1 (2026-11-19)
 
 - Fix: feedback runs ignored the corrected decisions. The forced-decision lookup's pattern contains the message id, and the id had ended up in the replacement text instead of the Find pattern. A test now runs the generated lookup.

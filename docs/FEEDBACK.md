@@ -2,6 +2,12 @@
 
 The triage gets better from corrections. Prompts alone don't fix it: the on-device model is small, so the lasting fix for a recurring mistake is a rule. Rules only change with a person's approval.
 
+## 0. The review page (default)
+
+After a Default or Kept run, the Engine opens the review page in the browser, and the report note starts with the same link. Each message is a card with buttons (Keep, Archive, Delete, Low, Moderate, High, Confirm, Unsub, Release; tap again to clear) and an optional hint field. **Submit** runs InboxTriage with one tagged line per correction, exactly the lines described below, so the rest of this page applies unchanged. The browser asks before switching to Shortcuts each time.
+
+How the data travels: the report is zipped by Shortcuts' Make Archive, base64url-encoded and put after `#v1.` in the link. Browsers never send the part after `#` to the server, and the page (`docs/review.html`) makes no network requests and has a Content Security Policy that forbids them. The link does stay in the browser's history. Set `reviewUI` to `"notes"` to turn the page off, or `"web"` to skip the note.
+
 ## 1. Mark mistakes in the report note
 
 Every report line ends in the Gmail id:

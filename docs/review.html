@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Inbox Triage review</title>
+<!--
+  The Inbox Triage review page. The Engine opens it with the run's report after the "#":
+  #v1.<base64url of a zip, gzip or plain UTF-8 report>. Browsers never send the part after "#" to the
+  server, and this page makes no network requests (see the CSP above). Submit hands the chosen
+  corrections to the InboxTriage shortcut as report lines tagged "x?<hint>)", the same format typed in
+  a Notes report, so one parser handles both.
+-->
+<style>
+  :root { --bg: #f2f2f7; --card: #fff; --text: #111; --muted: #6b6b70; --line: #d8d8dd; --chip: #e9e9ee;
+          --accent: #0a62d6; --on: #e8b400; --on-text: #000; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #000; --card: #1c1c1e; --text: #f2f2f7; --muted: #9a9aa0; --line: #333; --chip: #2c2c2e;
+            --accent: #0a84ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.4 -apple-system, system-ui, sans-serif; padding: 0 16px 120px; }
+  header { padding: 16px 0 4px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 17px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  .muted { color: var(--muted); font-size: 14px; margin: 2px 0; }
+  .card { background: var(--card); border: 2px solid transparent; border-radius: 14px; padding: 12px; margin: 10px 0; }
+  .card.set { border-color: var(--on); }
+  .who { font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; margin: 2px 0 6px; }
+  .sum { font-size: 14px; margin: 6px 0; white-space: pre-wrap; }
+  .links a { color: var(--accent); font-size: 14px; margin-right: 14px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; margin-top: 10px; }
+  button { font: inherit; font-size: 14px; min-height: 44px; border: 0; border-radius: 10px;
+           background: var(--chip); color: var(--text); }
+  button.current { outline: 1px solid var(--muted); }
+  button.on { background: var(--on); color: var(--on-text); font-weight: 600; }
+  input { width: 100%; margin-top: 8px; padding: 10px; font: inherit; font-size: 16px; border-radius: 10px;
+          border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  details { margin: 16px 0; color: var(--muted); font-size: 14px; white-space: pre-wrap; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+         background: var(--bg); border-top: 1px solid var(--line); }
+  #submit { width: 100%; min-height: 50px; font-size: 17px; font-weight: 600; background: var(--accent); color: #fff; }
+  #submit:disabled { opacity: .45; }
+  #error { color: #d33; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Inbox Triage review</h1>
+  <div id="summary" class="muted"></div>
+  <div id="error"></div>
+</header>
+<main id="cards"></main>
+<div id="bar"><button id="submit" disabled>Submit 0 corrections</button></div>
+<script>
+"use strict";
+
+// ---- pure functions (tested in tests/review.test.mjs) ----
+
+const CODES = [["k", "Keep"], ["a", "Archive"], ["d", "Delete"], ["l", "Low"], ["m", "Moderate"],
+               ["h", "High"], ["c", "Confirm"], ["u", "Unsub"], ["r", "Release"]];
+const RETURN_URL = "shortcuts://run-shortcut?name=InboxTriage&input=text&text=";
+// "Sender — Subject · DECISION·level · op · src · id:<id>", the Engine's report line.
+const ITEM_RE = /^(.*) · ([A-Z]+)(?:·([a-z]+))? · (\S+) · (\S+) · id:(\S+)\s*$/;
+
+function base64urlBytes(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/]/g, "");
+  while (s.length % 4) s += "=";
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+}
+
+async function inflate(bytes, format) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// The first file in a zip (Shortcuts' Make Archive). Sizes come from the central directory, because
+// the local header may defer them to a data descriptor.
+async function unzipFirst(bytes) {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = bytes.length - 22;
+  while (eocd >= 0 && v.getUint32(eocd, true) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error("zip: no end of central directory");
+  const cd = v.getUint32(eocd + 16, true);
+  const method = v.getUint16(cd + 10, true);
+  const size = v.getUint32(cd + 20, true);
+  const local = v.getUint32(cd + 42, true);
+  const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+  const data = bytes.subarray(start, start + size);
+  if (method === 0) return data;
+  if (method === 8) return inflate(data, "deflate-raw");
+  throw new Error("zip: compression method " + method);
+}
+
+// "#v1.<base64url>" → report text. The bytes may be a zip, gzip or plain UTF-8.
+async function decodePayload(hash) {
+  const m = /^#?v1\.(.+)$/s.exec(hash);
+  if (!m) throw new Error("no report in the link");
+  let bytes = base64urlBytes(m[1]);
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b) bytes = await unzipFirst(bytes);
+  else if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = await inflate(bytes, "gzip");
+  return new TextDecoder().decode(bytes);
+}
+
+function parseItem(line) {
+  const m = ITEM_RE.exec(line.trim());
+  if (!m) return null;
+  const dash = m[1].indexOf(" — ");
+  return { line: line.trim(), sender: dash < 0 ? m[1] : m[1].slice(0, dash),
+           subject: dash < 0 ? "" : m[1].slice(dash + 3), decision: m[2], level: m[3] || "",
+           op: m[4], src: m[5], id: m[6], summary: "", mail: "", web: "" };
+}
+
+// The Engine's Markdown report (or the Kept view) → {title, info, sections: [{heading, items, text}]}.
+function parseReport(text) {
+  const out = { title: "", info: [], sections: [] };
+  let section = null, item = null;
+  for (const raw of text.replace(/\r/g, "").split("\n")) {
+    const line = raw.trim();
+    if (!line) { item = null; continue; }
+    if (line.startsWith("# ") && !out.title) { out.title = line.slice(2); continue; }
+    if (line.startsWith("## ")) {
+      section = { heading: line.slice(3), items: [], text: [] };
+      out.sections.push(section);
+      item = null;
+      continue;
+    }
+    if (line.startsWith("**Feedback:**") || line.startsWith("[Review")) continue;
+    const it = parseItem(line);
+    if (it) {
+      if (!section) { section = { heading: "Messages", items: [], text: [] }; out.sections.push(section); }
+      section.items.push(it);
+      item = it;
+      continue;
+    }
+    if (item && line.startsWith("[Open in Mail]")) {
+      const mail = /\[Open in Mail\]\(([^)]+)\)/.exec(line), web = /\[Gmail web\]\(([^)]+)\)/.exec(line);
+      item.mail = mail ? mail[1] : "";
+      item.web = web ? web[1] : "";
+      continue;
+    }
+    if (item) { item.summary += (item.summary ? "\n" : "") + line; continue; }
+    if (section) { if (line !== "None") section.text.push(line); continue; }
+    out.info.push(line);
+  }
+  return out;
+}
+
+// One correction → the line the Notes feedback parser reads: "xa a hint) <report line>".
+function feedbackLine(code, hint, itemLine) {
+  const h = (hint || "").replace(/[)\n\r]/g, " ").replace(/\s+/g, " ").trim();
+  return "x" + code + (h ? " " + h : "") + ") " + itemLine;
+}
+
+function submitText(title, choices) {
+  const lines = choices.map((c) => feedbackLine(c.code, c.hint, c.line));
+  return "Review page: " + (title || "Inbox Triage") + "\n" + lines.join("\n") + "\n";
+}
+
+function submitUrl(title, choices) {
+  return RETURN_URL + encodeURIComponent(submitText(title, choices));
+}
+
+// ---- page ----
+
+function boot() {
+  const $ = (id) => document.getElementById(id);
+  const chosen = new Map();   // id -> {code, hint, line}
+  let report = { title: "", sections: [] };
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function update() {
+    const n = chosen.size;
+    $("submit").textContent = "Submit " + n + " correction" + (n === 1 ? "" : "s");
+    $("submit").disabled = n === 0;
+  }
+
+  function card(it) {
+    const c = el("div", "card");
+    c.append(el("div", "who", it.sender), el("div", "", it.subject),
+             el("div", "meta", it.decision + (it.level ? " " + it.level : "") + " · " + it.op + " · " + it.src));
+    if (it.summary) c.append(el("div", "sum", it.summary));
+    const links = el("div", "links");
+    if (it.mail) { const a = el("a", "", "Open in Mail"); a.href = it.mail; links.append(a); }
+    if (it.web) { const a = el("a", "", "Gmail web"); a.href = it.web; links.append(a); }
+    if (links.childNodes.length) c.append(links);
+    const current = { KEEP: "k", ARCHIVE: "a", DELETE: "d", UNSUBSCRIBE: "u" }[it.decision] ||
+                    (it.decision === "SUMMARIZE" ? { low: "l", moderate: "m", high: "h", confirmations: "c" }[it.level] : "");
+    const row = el("div", "row");
+    const hint = el("input");
+    hint.placeholder = "Hint for the rules (optional)";
+    hint.autocomplete = "off";
+    CODES.forEach(([code, label]) => {
+      const b = el("button", code === current ? "current" : "", label);
+      b.type = "button";
+      b.onclick = () => {
+        const prev = chosen.get(it.id);
+        if (prev && prev.code === code) chosen.delete(it.id);
+        else chosen.set(it.id, { code, hint: hint.value, line: it.line });
+        row.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
+        if (chosen.has(it.id)) b.classList.add("on");
+        c.classList.toggle("set", chosen.has(it.id));
+        update();
+      };
+      row.append(b);
+    });
+    hint.oninput = () => { const ch = chosen.get(it.id); if (ch) ch.hint = hint.value; };
+    c.append(row, hint);
+    return c;
+  }
+
+  function render() {
+    $("title").textContent = report.title || "Inbox Triage review";
+    document.title = report.title || "Inbox Triage review";
+    const n = report.sections.reduce((s, x) => s + x.items.length, 0);
+    $("summary").textContent = report.info.join(" ") + (report.info.length ? " " : "") + n + " messages to review.";
+    const main = $("cards");
+    for (const s of report.sections) {
+      if (!s.items.length && !s.text.length) continue;
+      if (s.items.length) {
+        main.append(el("h2", "", s.heading + " (" + s.items.length + ")"));
+        s.items.forEach((it) => main.append(card(it)));
+      } else {
+        const d = el("details");
+        d.append(el("summary", "", s.heading), document.createTextNode(s.text.join("\n")));
+        main.append(d);
+      }
+    }
+  }
+
+  $("submit").onclick = () => {
+    const choices = [...chosen.values()];
+    if (!choices.length) return;
+    location.href = submitUrl(report.title, choices);
+    $("submit").textContent = "Sent " + choices.length + " at " + new Date().toLocaleTimeString() + ". Submit again";
+  };
+
+  decodePayload(location.hash)
+    .then((text) => { report = parseReport(text); render(); update(); })
+    .catch((e) => { $("error").textContent = "Couldn't read the report: " + e.message +
+                    ". Open this page from the Inbox Triage shortcut."; });
+}
+
+if (typeof document !== "undefined") boot();
+</script>
+</body>
+</html>
