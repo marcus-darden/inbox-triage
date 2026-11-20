@@ -44,11 +44,33 @@ function b64urlBytes(s) {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 
+async function inflate(bytes, format) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// The first file in a zip archive. Sizes come from the central directory, because the local
+// header may defer them to a data descriptor.
+async function unzipFirst(bytes) {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = bytes.length - 22;
+  while (eocd >= 0 && v.getUint32(eocd, true) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error("zip: no end of central directory");
+  const cd = v.getUint32(eocd + 16, true);
+  const method = v.getUint16(cd + 10, true), size = v.getUint32(cd + 20, true), local = v.getUint32(cd + 42, true);
+  const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+  const data = bytes.subarray(start, start + size);
+  if (method === 0) return data;
+  if (method === 8) return inflate(data, "deflate-raw");
+  throw new Error("zip: compression method " + method);
+}
+
 async function decode(hash) {
   let bytes = b64urlBytes(hash);
-  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {   // gzip, from Shortcuts' Make Archive
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-    bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {   // gzip
+    bytes = await inflate(bytes, "gzip");
+  } else if (bytes[0] === 0x50 && bytes[1] === 0x4b) {   // zip ("PK"), from Shortcuts' Make Archive
+    bytes = await unzipFirst(bytes);
   }
   return JSON.parse(new TextDecoder().decode(bytes));
 }
