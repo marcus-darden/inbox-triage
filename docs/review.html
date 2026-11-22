@@ -224,9 +224,14 @@ function boot() {
   function render() {
     $("title").textContent = report.title || "Inbox Triage review";
     document.title = report.title || "Inbox Triage review";
-    const n = report.sections.reduce((s, x) => s + x.items.length, 0);
+    const n = new Set(report.sections.flatMap((x) => x.items.map((it) => it.id))).size;
     $("summary").textContent = report.info.join(" ") + (report.info.length ? " " : "") + n + " messages to review.";
     const main = $("cards");
+    // "Needs you" repeats messages that also appear under their decision: show each message once.
+    const shown = new Set();
+    for (const s of report.sections) {
+      s.items = s.items.filter((it) => !shown.has(it.id) && shown.add(it.id));
+    }
     for (const s of report.sections) {
       if (!s.items.length && !s.text.length) continue;
       if (s.items.length) {
