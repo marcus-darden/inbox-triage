@@ -6,6 +6,9 @@
 - `reviewUI` config: `"both"` (default: page and note), `"web"` or `"notes"`. `reviewUrl` points a fork at its own page. The note starts with a link to the page.
 - No hint, no rule: corrections without a hint are applied to that message only. Only hinted corrections go to the Locally AI proposals and `bin/learn`, and the proposal prompt says not to generalize beyond the hint.
 - The review page shows each message once (a flagged message used to appear under Needs you and again under its decision).
+- KEEP messages get a two-sentence summary (`prompts/summary-keep.txt`) in the note and on the review page, for context without opening the message.
+- Review page: summaries are collapsed under "Summary" so the page stays short; the hint field reads "Optional hint to update rules".
+- Report links: only Open in Mail. The Gmail web link is gone (Gmail on the web opened the inbox, not the message).
 - Reports end with the Engine version; `bin/deploy` gives the shortcuts the deploy time.
 - Tests for the page (node: payload decoding, report parsing, Submit text) and a Python round trip through the shortcut's feedback patterns. CI runs both.
 

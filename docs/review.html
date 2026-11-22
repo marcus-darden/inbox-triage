@@ -33,7 +33,8 @@
   .card.set { border-color: var(--on); }
   .who { font-weight: 600; }
   .meta { color: var(--muted); font-size: 13px; margin: 2px 0 6px; }
-  .sum { font-size: 14px; margin: 6px 0; white-space: pre-wrap; }
+  .sum { font-size: 14px; margin: 6px 0; white-space: pre-wrap; color: var(--text); }
+  .sum > summary { color: var(--accent); min-height: 32px; line-height: 32px; }
   .links a { color: var(--accent); font-size: 14px; margin-right: 14px; }
   .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; margin-top: 10px; }
   button { font: inherit; font-size: 14px; min-height: 44px; border: 0; border-radius: 10px;
@@ -115,7 +116,7 @@ function parseItem(line) {
   const dash = m[1].indexOf(" — ");
   return { line: line.trim(), sender: dash < 0 ? m[1] : m[1].slice(0, dash),
            subject: dash < 0 ? "" : m[1].slice(dash + 3), decision: m[2], level: m[3] || "",
-           op: m[4], src: m[5], id: m[6], summary: "", mail: "", web: "" };
+           op: m[4], src: m[5], id: m[6], summary: "", mail: "" };
 }
 
 // The Engine's Markdown report (or the Kept view) → {title, info, sections: [{heading, items, text}]}.
@@ -141,9 +142,8 @@ function parseReport(text) {
       continue;
     }
     if (item && line.startsWith("[Open in Mail]")) {
-      const mail = /\[Open in Mail\]\(([^)]+)\)/.exec(line), web = /\[Gmail web\]\(([^)]+)\)/.exec(line);
+      const mail = /\[Open in Mail\]\(([^)]+)\)/.exec(line);
       item.mail = mail ? mail[1] : "";
-      item.web = web ? web[1] : "";
       continue;
     }
     if (item) { item.summary += (item.summary ? "\n" : "") + line; continue; }
@@ -192,16 +192,19 @@ function boot() {
     const c = el("div", "card");
     c.append(el("div", "who", it.sender), el("div", "", it.subject),
              el("div", "meta", it.decision + (it.level ? " " + it.level : "") + " · " + it.op + " · " + it.src));
-    if (it.summary) c.append(el("div", "sum", it.summary));
+    if (it.summary) {   // collapsed by default to keep the page short
+      const d = el("details", "sum");
+      d.append(el("summary", "", "Summary"), el("div", "", it.summary));
+      c.append(d);
+    }
     const links = el("div", "links");
     if (it.mail) { const a = el("a", "", "Open in Mail"); a.href = it.mail; links.append(a); }
-    if (it.web) { const a = el("a", "", "Gmail web"); a.href = it.web; links.append(a); }
     if (links.childNodes.length) c.append(links);
     const current = { KEEP: "k", ARCHIVE: "a", DELETE: "d", UNSUBSCRIBE: "u" }[it.decision] ||
                     (it.decision === "SUMMARIZE" ? { low: "l", moderate: "m", high: "h", confirmations: "c" }[it.level] : "");
     const row = el("div", "row");
     const hint = el("input");
-    hint.placeholder = "Hint, if this should become a rule";
+    hint.placeholder = "Optional hint to update rules";
     hint.autocomplete = "off";
     CODES.forEach(([code, label]) => {
       const b = el("button", code === current ? "current" : "", label);

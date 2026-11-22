@@ -170,3 +170,16 @@ def test_forced_decision_lookup_works(shortcuts):
         assert re.sub(pattern, r"\1", force, count=1) == want
     pattern = token["string"].replace("￼", "zzz999")
     assert re.sub(pattern, r"\1", force, count=1) == force  # not forced: unchanged, the shortcut checks this
+
+
+def test_every_prompt_file_read_ships_as_an_example(shortcuts):
+    """bin/deploy seeds missing prompts from icloud/prompts/, so each prompt a shortcut reads must exist there."""
+    import os
+
+    from conftest import REPO
+    paths = {p["WFGetFilePath"] for _, i, p in all_actions(shortcuts)
+             if i.endswith("documentpicker.open") and isinstance(p.get("WFGetFilePath"), str)
+             and p["WFGetFilePath"].startswith("EmailTriage/prompts/")}
+    assert "EmailTriage/prompts/summary-keep.txt" in paths
+    missing = [p for p in paths if not os.path.exists(os.path.join(REPO, "icloud", "prompts", os.path.basename(p)))]
+    assert not missing

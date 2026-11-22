@@ -22,8 +22,7 @@ def line(sender, subject, decision, op, src, n, tag=""):
     """One report line in the Engine's format, with its links."""
     msg_id = f"18f3c2a9e0b4d7{n:02x}"
     return (f"{tag}{sender} — {subject} · {decision} · {op} · {src} · id:{msg_id}\n"
-            f"[Open in Mail](message://%3Cdemo{n}%40example.com%3E) · "
-            f"[Gmail web](https://mail.google.com/mail/u/0/#all/{msg_id})\n")
+            f"[Open in Mail](message://%3Cdemo{n}%40example.com%3E)\n")
 
 # (section, sender, subject, decision, op, src, summary) in the Engine's report format; all made up.
 MESSAGES = [

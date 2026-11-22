@@ -122,7 +122,7 @@ Development: `pip install pytest ruff && ruff check . && pytest`. CI runs both o
 
 - iPhone only for running, and a Mac to generate and sign. Shortcuts has no supported API, so the plist format comes from Apple's own Gallery shortcuts and community references, and is checked on a device.
 - Gmail only. The iOS Mail app's Shortcuts actions can read but not archive or delete.
-- Gmail's iPhone app has no link that opens a specific message. Report links open Apple Mail (`message://`) or Gmail on the web.
+- Gmail's iPhone app has no link that opens a specific message. Report links open the message in Apple Mail (`message://`), which needs the Gmail account added to Mail.
 - The on-device model is small. It mislabels promotions as "a person" and invents deadlines; rules and feedback fix what prompts can't.
 - Notes can't report checklist ticks back to Shortcuts, so feedback is typed rather than ticked.
 

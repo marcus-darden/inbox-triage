@@ -502,7 +502,7 @@ def build_engine():
     for f, name in [("system", "PSystem"), ("categories", "PCategories"), ("keep-rules", "PRules"),
                     ("content-rules", "PContent"), ("message", "PMessage")]:
         set_text(name, out(get_file(f"EmailTriage/prompts/{f}.txt")))
-    for level in LEVELS:
+    for level in LEVELS + ["keep"]:
         set_text("PSum_" + level, out(get_file(f"EmailTriage/prompts/summary-{level}.txt")))
 
     set_var("Today", out(fmt_date("EEEE, MMMM d, yyyy")))
@@ -593,8 +593,7 @@ def build_engine():
             "message link, so the second link is Gmail on the web, by thread.")
     set_text("MessageIdHdr", out(regex_replace(var("MessageIdHdr"), r"\s+", "")))
     mid = add("urlencode", {"WFInput": text(var("MessageIdHdr"))}, "URL Encoded Text")
-    set_text("Links", "[Open in Mail](message://", out(mid), ") · [Gmail web](https://mail.google.com/mail/u/0/#all/",
-             var("ThreadId"), ")")
+    set_text("Links", "[Open in Mail](message://", out(mid), ")")
     set_text("Link", "message://", out(mid))
     comment("Clean text for the note: Notes' Markdown import mis-renders '&' followed by letters and runs of "
             "whitespace, so swap & for a full-width ＆ and collapse whitespace and invisible characters.")
@@ -726,7 +725,14 @@ def build_engine():
     set_text("Op", "trash")
     b.end()
 
-    b = if_text(as_text("Decision"), IS, "SUMMARIZE")
+    comment("SUMMARIZE and KEEP messages get a summary from the message body (KEEP: two sentences of context).")
+    set_text("Summary", "")
+    set_text("NeedBody", "no")
+    for d in ("SUMMARIZE", "KEEP"):
+        b = if_text(as_text("Decision"), IS, d)
+        set_text("NeedBody", "yes")
+        b.end()
+    nb = if_text(as_text("NeedBody"), IS, "yes")
     comment("Fetch the full message as raw JSON text and find the first text/plain part's body at any depth, "
             "else text/html, else use the snippet. No dotted key paths, so no message shape can stop the run.")
     full = http("GET", (GMAIL + "/", var("MsgId"), "?format=full"))
@@ -759,6 +765,7 @@ def build_engine():
     c2.end()
     set_text("BodyText", out(regex_replace(var("Decoded"), r"^([\s\S]{3000})[\s\S]*$", "$1")))
     c.end()
+    nb.end()
 
     def summarize(prompt_var):
         sp = text_action(var(prompt_var), "\n\nFrom: ", var("From"), "\nSubject: ", var("Subject"),
@@ -768,6 +775,11 @@ def build_engine():
         set_text("Summary", out(regex_replace(var("Summary"), r"\n\s*\n+", "\n")))
         set_text("Summary", out(replace(var("Summary"), "&", "＆")))
 
+    b = if_text(as_text("Decision"), IS, "KEEP")
+    summarize("PSum_keep")
+    b.end()
+
+    b = if_text(as_text("Decision"), IS, "SUMMARIZE")
     for level in LEVELS:
         c = if_text(as_text("Level"), IS, level)
         summarize("PSum_" + level)
@@ -868,13 +880,17 @@ def build_engine():
     b.end()
     set_text("Item", var("SenderName"), " — ", var("Subject"), " · ", var("Decision"), var("LevelTag"), " · ",
              var("Op"), " · ", var("Src"), " · id:", var("MsgId"))
+    set_text("SumLine", "")
+    b = if_has_value(as_text("Summary"))
+    set_text("SumLine", var("Summary"), "\n")
+    b.end()
     b = if_text(as_text("Flag"), IS, "needs-you")
-    append_var("NeedsYou", out(text_action(var("Item"), "\n", var("Links"), "\n")))
+    append_var("NeedsYou", out(text_action(var("Item"), "\n", var("SumLine"), var("Links"), "\n")))
     b.end()
     for decision, group in [("KEEP", "G_kept"), ("ARCHIVE", "G_archived"), ("DELETE", "G_trashed"),
                             ("UNSUBSCRIBE", "G_unsub")]:
         b = if_text(as_text("Decision"), IS, decision)
-        append_var(group, out(text_action(var("Item"), "\n", var("Links"), "\n")))
+        append_var(group, out(text_action(var("Item"), "\n", var("SumLine"), var("Links"), "\n")))
         b.end()
     b = if_text(as_text("Decision"), IS, "SUMMARIZE")
     for level in LEVELS:
