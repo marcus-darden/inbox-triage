@@ -29,5 +29,5 @@ jobs:
       - name: Test (generator invariants, patterns, bin/learn, review page round trip)
         run: pytest -q
       - name: Test the review page (node)
-        run: node --test tests/
+        run: node --test tests/review.test.mjs
       # Signing (shortcuts sign) needs macOS and an Apple account; it is a release step on the Mac.
