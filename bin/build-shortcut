@@ -34,6 +34,8 @@ CONFIG_FOLDER = {
 # The review page (docs/review.html on GitHub Pages). config.json "reviewUrl" overrides it for a fork.
 REVIEW_URL = "https://marcus-darden.github.io/inbox-triage/review.html"
 
+VERSION = "0.2.0"  # shown at the end of each report, so a run shows which Engine made it
+
 LEVELS = ["low", "moderate", "high", "confirmations"]
 DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
 
@@ -339,6 +341,7 @@ def show_report(title_ref, body_ref, allow_web_ref=None):
     r = replace(out(r), "=", "")
     set_text("ReviewURL", var("ReviewBase"), "#v1.", out(r))
     set_text("ReviewLink", "[Review and correct in the browser](", var("ReviewURL"), ")\n\n")
+    save_file(out(text_action(var("ReviewURL"))), "EmailTriage/log/last-review-url.txt")
     b.end()
     b = if_text(as_text("ReviewUI"), IS_NOT, "web")
     note = text_action(var("ReviewLink"), body_ref)
@@ -953,6 +956,7 @@ def build_engine():
           " kept messages still in the inbox (label AutoTriage/Kept).\n\n", FEEDBACK_HELP, "\n\n"]
     for v, _, _ in SECTIONS:
         md += ["## ", var("H_" + v), "\n\n", var("T_" + v), "\n\n"]  # items are separated by blank lines
+    md += ["Inbox Triage Engine " + VERSION + ", review: ", var("ReviewUI"), "\n"]
     report = text_action(*md)
     comment("Fallback copy of the report, in case the note can't be created.")
     save_file(out(text_action("# ", var("Title"), "\n\n", out(report))), "EmailTriage/log/last-report.txt")

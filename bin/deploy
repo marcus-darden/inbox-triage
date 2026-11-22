@@ -35,6 +35,7 @@ done
 
 for f in "$repo"/build/*.shortcut; do
   case "$f" in *.unsigned.shortcut) continue ;; esac
-  [ -f "$f" ] && rsync -a --checksum "$f" "$dest/"
+  # cp, not rsync -a: Files should show the deploy time, so a new build is easy to tell apart.
+  [ -f "$f" ] && cp "$f" "$dest/"
 done
 echo "Deployed to $dest"
