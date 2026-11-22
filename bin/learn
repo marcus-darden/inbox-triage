@@ -9,8 +9,9 @@ Usage: bin/learn            show the proposal (changes nothing)
        bin/learn --apply    write local/rules.json, run bin/deploy and clear pending.tsv
                             (only after the owner has approved the proposal)
 
-Corrections that aren't about a sender (one-off KEEPs, RELEASE from Kept) are listed for a person
-or agent to turn into content rules in icloud/prompts/content-rules.txt by hand.
+Only corrections with a hint ("xd not interested in fare sales) …") are used: one without a hint is
+an action on that message only. Corrections that aren't about a sender (one-off KEEPs, RELEASE from
+Kept) are listed for a person or agent to turn into content rules in icloud/prompts/content-rules.txt.
 """
 import collections
 import difflib
@@ -56,6 +57,23 @@ def sender_address(token, msg_id):
     value = next((h["value"] for h in headers if h["name"].lower() == "from"), "")
     m = re.search(r"<([^>]+)>", value)
     return (m.group(1) if m else value).strip().lower()
+
+
+# The hint between a feedback code and the first ')', as in the shortcut's FEEDBACK_HINT_RE.
+HINT_RE = re.compile(r"^[\s\u2022\u25e6\u25aa\u2610\u2611\u2612\u2713\u2714\u25cb\u25cf*\-]*x[kadlmhcur]"
+                     r"(?:\s+([^)]*?))?\s*\)", re.I)
+
+
+def hint(line):
+    m = HINT_RE.match(line or "")
+    return (m.group(1) or "").strip() if m else ""
+
+
+def split_hinted(rows):
+    """(rows with a hint, rows without). A correction without a hint is an action on that one message,
+    never evidence for a rule."""
+    hinted = [r for r in rows if len(r) > 5 and hint(r[5])]
+    return hinted, [r for r in rows if r not in hinted]
 
 
 def to_rule(corrected):
@@ -109,6 +127,10 @@ def main():
     rows = unique_rows([line.split("\t") for line in read_icloud(PENDING).splitlines() if line.strip()])
     if not rows:
         sys.exit("pending.tsv is empty.")
+    rows, action_only = split_hinted(rows)
+    print(f"{len(action_only)} corrections without a hint: applied to those messages only, no rules.")
+    if not rows:
+        sys.exit("No corrections with a hint, so nothing to propose.")
     token = access_token()
     with open(RULES if os.path.exists(RULES) else RULES_EXAMPLE) as f:
         rules = json.load(f)

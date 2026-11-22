@@ -54,6 +54,7 @@
 <header>
   <h1 id="title">Inbox Triage review</h1>
   <div id="summary" class="muted"></div>
+  <div class="muted">A correction without a hint changes that message only. Add a hint if you want it to become a rule.</div>
   <div id="error"></div>
 </header>
 <main id="cards"></main>
@@ -200,7 +201,7 @@ function boot() {
                     (it.decision === "SUMMARIZE" ? { low: "l", moderate: "m", high: "h", confirmations: "c" }[it.level] : "");
     const row = el("div", "row");
     const hint = el("input");
-    hint.placeholder = "Hint for the rules (optional)";
+    hint.placeholder = "Hint, if this should become a rule";
     hint.autocomplete = "off";
     CODES.forEach(([code, label]) => {
       const b = el("button", code === current ? "current" : "", label);

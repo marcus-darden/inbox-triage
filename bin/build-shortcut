@@ -1016,12 +1016,18 @@ def apply_lines(body_name, item="Repeat Item"):
     set_text("ItemText", out(regex_replace(var("Line"), FEEDBACK_ITEM_RE, "$1")))
     comment("The hint is the text between the code and the first ')'.")
     set_text("Extra", out(regex_replace(var("Line"), FEEDBACK_HINT_RE, "$1")))
+    comment("Only a correction with a hint is about more than this one message, so only those go to the "
+            "rule proposals. Without a hint it is an action on this message only.")
+    set_text("HintTag", " · action only")
+    c3 = if_has_value(as_text("Extra"))
+    set_text("HintTag", "")
     set_text("Corrections", var("Corrections"), "- from: ", var("FromAddr"), " | ", var("ItemText"), " | was: ",
              var("Original"), " | now: ", var("Corrected"), " | hint: ", var("Extra"), "\n")
+    c3.end()
     set_text("Pending", var("Pending"), var("Today"), "\t", var("Source"), "\t", var("Id"), "\t", var("Original"),
              "\t", var("Corrected"), "\t", var("Line"), "\n")
     entry = regex_replace(var("Line"), r"^[^)]*\)\s*", "")
-    set_text("Done", var("Done"), "✓ ", var("Corrected"), " ← ", out(entry), "\n")
+    set_text("Done", var("Done"), "✓ ", var("Corrected"), var("HintTag"), " ← ", out(entry), "\n")
     c2.end()
     c.end()
     ll.end()
@@ -1034,13 +1040,16 @@ def finish_feedback():
     old = get_file("EmailTriage/feedback/pending.tsv", required=False)
     save_file(out(text_action(out(old), var("Pending"))), "EmailTriage/feedback/pending.tsv")
     c.end()
-    set_text("Proposals", "No corrections, so no proposals.")
+    set_text("Proposals", "No hints, so no rule proposals. A correction without a hint changes that message "
+             "only. Add a hint if you want a correction to become a rule.")
     c = if_has_value(as_text("Corrections"))
     comment("Ask the model for rule changes from these corrections. They are only proposed, never applied.")
     rules_text = text_action(out(get_file("EmailTriage/rules.json")))
     ask_text = text_action(
         "You maintain the email triage rules for the user. Below are the current rules (JSON) and corrections the user "
-        "just made to the triage. Propose rule changes so that these corrections happen automatically next time. "
+        "just made to the triage, each with the user's hint. Propose rule changes so that what each hint states "
+        "happens automatically next time. Don't generalize beyond the hint: no rule for a sender or topic the hint "
+        "doesn't name. "
         "Sender rules match when the From header contains 'from' (use the exact address, or a narrow mail "
         "subdomain) and, if 'subject' is set, the Subject contains it. Content rules match when the subject or "
         "snippet contains 'keyword'. Only propose a rule the corrections support. Actions: KEEP, ARCHIVE, DELETE, "

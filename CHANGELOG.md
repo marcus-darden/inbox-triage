@@ -4,6 +4,9 @@
 
 - Review page: after a Default or Kept run, the Engine opens `docs/review.html` (GitHub Pages) in the browser with the run's report zipped and base64url-encoded after `#v1.` in the link, so it never reaches a server. Each message is a card with decision buttons and a hint field. Submit runs InboxTriage with the corrections as tagged report lines, the same format and parser as a shared note.
 - `reviewUI` config: `"both"` (default: page and note), `"web"` or `"notes"`. `reviewUrl` points a fork at its own page. The note starts with a link to the page.
+- No hint, no rule: corrections without a hint are applied to that message only. Only hinted corrections go to the Locally AI proposals and `bin/learn`, and the proposal prompt says not to generalize beyond the hint.
+- The review page shows each message once (a flagged message used to appear under Needs you and again under its decision).
+- Reports end with the Engine version; `bin/deploy` gives the shortcuts the deploy time.
 - Tests for the page (node: payload decoding, report parsing, Submit text) and a Python round trip through the shortcut's feedback patterns. CI runs both.
 
 ## 0.1.1 (2026-11-19)

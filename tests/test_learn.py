@@ -8,7 +8,7 @@ ADDRESSES = {"m1": "promo@deals.example.com", "m2": "promo@deals.example.com", "
              "m4": "jane@example.org", "m5": "noreply@github.example", "m6": "bob@example.org"}
 
 
-def row(msg_id, original, corrected, line="Sender — Subject · X · op · src · id:" + "x"):
+def row(msg_id, original, corrected, line="xa a hint) Sender — Subject · X · op · src · id:x"):
     return ["2026-11-19 10:00", "Inbox Triage, Thu Nov 19", msg_id, original, corrected, line]
 
 
@@ -67,3 +67,16 @@ def test_input_rules_are_not_modified(learn):
     before = repr(RULES)
     propose(learn, [row("m1", "UNSUBSCRIBE", "ARCHIVE")])
     assert repr(RULES) == before
+
+
+def test_hint_is_read_like_the_shortcut(learn):
+    assert learn.hint("xm regular work business) A — B · KEEP · keep · model · id:1") == "regular work business"
+    assert learn.hint("Xd) A (dept) — B · KEEP · keep · model · id:1") == ""
+    assert learn.hint("• xa  sales ) A — B · id:1") == "sales"
+
+
+def test_corrections_without_a_hint_are_actions_only(learn):
+    rows = [row("m1", "KEEP", "DELETE", "xd) Shop — Sale · KEEP · keep · model · id:m1"),
+            row("m2", "KEEP", "DELETE", "xd not interested in sales) Shop — Sale · KEEP · keep · model · id:m2")]
+    hinted, action_only = learn.split_hinted(rows)
+    assert [r[2] for r in hinted] == ["m2"] and [r[2] for r in action_only] == ["m1"]

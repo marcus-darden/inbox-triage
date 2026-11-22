@@ -36,6 +36,7 @@ xd) Music Shop — Shop Black Friday Early! · KEEP·low · keep · model · id:
 - Upper or lower case both work (iOS capitalizes the first letter).
 - Leading spaces, bullets and checkboxes before the code are ignored.
 - The hint is everything up to the first `)`, so it can contain `(` but not `)`.
+- **No hint, no rule.** A correction without a hint is an action on that message only: it is applied and recorded, marked "action only" in the feedback-applied note, and never used for rule proposals (Locally AI or `bin/learn`). Add a hint when you want the correction to generalize, and the proposals stay within what the hint says.
 
 Why typed codes and not checkboxes? Notes' checklist items can be written from Shortcuts, but they can't be read back per note: the checklist query has no filters, and no action returns a note's checklist items.
 
