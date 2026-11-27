@@ -1,1 +1,3 @@
-Summarize this email for the user in TWO plain sentences: who it is from and what they want, and any date, deadline or decision it mentions. No bullets, no other text.
+The user already sees this email's sender and subject. Do not repeat them, and do not describe the email ("The email is from…", "It mentions…").
+In at most TWO plain sentences, give what the body actually says: the key facts, what is asked of the user, and any numbers, dates, deadlines or decisions.
+If the body adds nothing beyond the subject, reply with exactly: Nothing beyond the subject.
