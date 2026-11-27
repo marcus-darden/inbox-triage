@@ -28,6 +28,10 @@ pull_rules() {
     echo "$ih" > "$mark"
     if git -C "$localdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       git -C "$localdir" add rules.json && git -C "$localdir" commit -q -m "rules.json: rules approved on the phone" || true
+      # Keep the private backup current when local/ has a remote (a private repo). Best effort.
+      if git -C "$localdir" remote get-url origin >/dev/null 2>&1; then
+        git -C "$localdir" push -q origin HEAD >/dev/null 2>&1 || echo "Couldn't push local/ to its backup remote." >&2
+      fi
     fi
     echo "Pulled rules.json from iCloud (approved on the phone) into $mine."
     return 0
