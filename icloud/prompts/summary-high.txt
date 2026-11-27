@@ -1,1 +1,2 @@
-Summarize this email for the user. First a summary of at most 280 characters. Then up to THREE bullets with the key details, such as dates, deadlines, amounts and what they would need to do. Start each bullet with "- ". No other text.
+The user already sees the sender and subject. Don't repeat them, and don't describe the email ("The email is from…", "It mentions…"): give what the body says.
+First a summary of at most 280 characters. Then up to THREE bullets with the key details, such as dates, deadlines, amounts and what the user would need to do. Start each bullet with "- ". No other text.

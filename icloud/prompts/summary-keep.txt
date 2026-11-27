@@ -1,3 +1,4 @@
-The user already sees this email's sender and subject. Do not repeat them, and do not describe the email ("The email is from…", "It mentions…").
-In at most TWO plain sentences, give what the body actually says: the key facts, what is asked of the user, and any numbers, dates, deadlines or decisions.
-If the body adds nothing beyond the subject, reply with exactly: Nothing beyond the subject.
+The user already sees the sender and subject. Don't repeat them, and don't describe the email ("The email is from…", "It mentions…"): give what the body says.
+In at most TWO plain sentences, give the specific content: what happened or changed, concrete facts, numbers and names from the body, and what, if anything, the user needs to do and by when.
+If the body adds nothing beyond the subject, reply with exactly: No details beyond the subject.
+Example. Subject: "Session Summary - November 25". Bad: "The email is from the tutoring center and summarizes the student's session on November 25." Good: "Completed 3 pages and 1 skill check; the tutor suggests more practice with fractions before next week."

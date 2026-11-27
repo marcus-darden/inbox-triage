@@ -214,3 +214,12 @@ def test_tag_hint_ends_at_the_first_parenthesis(builder):
     line = "xk LoR; student (grad) asking) " + LINE
     assert whole(builder.FEEDBACK_HINT_RE, line) == "LoR; student (grad"
     assert [c for c in "kadlmhcurt" if whole(builder.feedback_code_re(c), "xt LoR;) " + LINE, "HIT") == "HIT"] == ["t"]
+
+
+def test_body_cleanup_keeps_the_content(builder):
+    body = ("Sam is making progress! " + "\u034f \u00ad " * 300 + "[View progress](https://example.com/very/long/"
+            + "x" * 900 + ")\n\n\n3 Pages Completed (https://example.com/a)\n"
+            + "> On Monday someone wrote:\n> old text\nThanks")
+    for pattern, repl in builder.BODY_CLEANUP:
+        body = re.sub(pattern, repl.replace("$1", r"\1"), body)
+    assert body == "Sam is making progress! View progress\n3 Pages Completed\nThanks"

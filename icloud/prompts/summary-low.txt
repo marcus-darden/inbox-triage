@@ -1,1 +1,2 @@
-Summarize this email for the user in exactly ONE bullet: the single most important point of the whole email. Start the line with "- ". No other text.
+The user already sees the sender and subject. Don't repeat them, and don't describe the email ("The email is from…", "It mentions…"): give what the body says.
+In exactly ONE bullet, give the single most important point of the body. Start the line with "- ". No other text.

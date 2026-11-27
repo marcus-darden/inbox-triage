@@ -1,1 +1,2 @@
-Summarize this email for the user in up to THREE bullets, the most important points first. Start each line with "- ". No other text.
+The user already sees the sender and subject. Don't repeat them, and don't describe the email ("The email is from…", "It mentions…"): give what the body says.
+In up to THREE bullets, the most important points first. Start each line with "- ". No other text.

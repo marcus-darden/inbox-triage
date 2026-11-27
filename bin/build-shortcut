@@ -49,6 +49,16 @@ PAD2_RE = r"^((?:[\s\S]{4})*[\s\S]{2})$"
 PAD3_RE = r"^((?:[\s\S]{4})*[\s\S]{3})$"
 UNSUB_HTTPS_RE = r"^[\s\S]*?<(https://[^>]+)>[\s\S]*$"
 UNSUB_MAILTO_RE = r"^[\s\S]*?<mailto:([^>?]+)[^>]*>[\s\S]*$"
+# Body cleanup before summarizing, in order (pattern, replacement); tested in tests/test_patterns.py.
+BODY_CLEANUP = [
+    (r"\[([^\]]*)\]\(\s*https?://[^)\s]*\s*\)", "$1"),               # Markdown links: keep the text
+    (r"https?://[^\s)>]+", ""),                                  # bare links
+    (r"[(<][ \t]*[)>]", ""),                                          # brackets left empty by removed links
+    (r"[\u034f\u00ad\u200b\u200c\u200d\u200e\u200f\u2060\ufeff]", ""),  # preheader filler, invisible characters
+    (r"(?m)^\s*>.*$", ""),                                        # quoted reply lines
+    (r"[ \t\u00a0]+", " "),
+    (r"\s*\n\s*", "\n"),                                          # trim lines, drop blank ones
+]
 LEAD = r"^[\s\u2022\u25e6\u25aa\u2610\u2611\u2612\u2713\u2714\u25cb\u25cf*\-]*"  # bullets, spaces, checkboxes
 FEEDBACK_MARK_RE = "(?i)" + LEAD + r"x[kadlmhcurt](?:\s[^)]*)?\)[\s\S]*id:\S+[\s\S]*$"
 FEEDBACK_ID_RE = r"^[\s\S]*id:(\S+)[\s\S]*$"
@@ -795,6 +805,10 @@ def build_engine():
     rich = add("getrichtextfromhtml", {"WFHTML": text(var("Decoded"))}, "Rich Text from HTML")
     set_text("Decoded", out(add("detect.text", {"WFInput": attachment(out(rich))}, "Text")))
     c2.end()
+    comment("Clean the body before cutting it to 3000 characters: links, preheader filler, invisible characters "
+            "and quoted replies used to fill the budget before the real content.")
+    for pattern, repl in BODY_CLEANUP:
+        set_text("Decoded", out(regex_replace(var("Decoded"), pattern, repl)))
     set_text("BodyText", out(regex_replace(var("Decoded"), r"^([\s\S]{3000})[\s\S]*$", "$1")))
     c.end()
     nb.end()
