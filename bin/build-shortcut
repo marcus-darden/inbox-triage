@@ -50,7 +50,7 @@ PAD3_RE = r"^((?:[\s\S]{4})*[\s\S]{3})$"
 UNSUB_HTTPS_RE = r"^[\s\S]*?<(https://[^>]+)>[\s\S]*$"
 UNSUB_MAILTO_RE = r"^[\s\S]*?<mailto:([^>?]+)[^>]*>[\s\S]*$"
 LEAD = r"^[\s\u2022\u25e6\u25aa\u2610\u2611\u2612\u2713\u2714\u25cb\u25cf*\-]*"  # bullets, spaces, checkboxes
-FEEDBACK_MARK_RE = "(?i)" + LEAD + r"x[kadlmhcur](?:\s[^)]*)?\)[\s\S]*id:\S+[\s\S]*$"
+FEEDBACK_MARK_RE = "(?i)" + LEAD + r"x[kadlmhcurt](?:\s[^)]*)?\)[\s\S]*id:\S+[\s\S]*$"
 FEEDBACK_ID_RE = r"^[\s\S]*id:(\S+)[\s\S]*$"
 FEEDBACK_ORIGINAL_RE = r"^[\s\S]* · ([A-Z]+)(?:·[a-z]+)? · [\s\S]*$"
 FEEDBACK_ITEM_RE = r"^[^)]*\)\s*([\s\S]*?) · [A-Z][\s\S]*$"
@@ -58,7 +58,16 @@ FROM_HEADER_RE = r'^[\s\S]*?"name":\s*"From",\s*"value":\s*"((?:[^"\\]|\\.)*)"[\
 # Feedback runs pass force = "id=ACTION level;id=ACTION;..."; the message id sits between these two parts.
 FORCE_PREFIX = r"^(?:[\s\S]*;)?"
 FORCE_SUFFIX = r"=([^;]*)[\s\S]*$"
-FEEDBACK_HINT_RE = "(?i)" + LEAD + r"x[kadlmhcur](?:\s+([^)]*?))?\s*\)[\s\S]*$"
+FEEDBACK_HINT_RE = "(?i)" + LEAD + r"x[kadlmhcurt](?:\s+([^)]*?))?\s*\)[\s\S]*$"
+# A hint may start with a tag: "LoR; student asking for a letter". The tag becomes a Gmail label of that name,
+# the rest is the hint for the rules. Tags: letters, digits, - and _, up to 24 characters.
+TAG_MARK = "⟦TAG⟧"
+TAG_HINT_RE = r"^\s*([A-Za-z0-9_-]{1,24})\s*;[\s\S]*$"
+TAG_REST_RE = r"^\s*[A-Za-z0-9_-]{1,24}\s*;\s*([\s\S]*)$"
+LABELS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/labels"
+# The id of the label named like the tag, in any case (Gmail label names are case-insensitive).
+LABEL_ID_PREFIX = r'(?i)^[\s\S]*?"id":\s*"([^"]+)",\s*"name":\s*"'
+LABEL_ID_SUFFIX = r'"[\s\S]*$'
 
 
 def feedback_code_re(code):
@@ -307,6 +316,23 @@ def repeat_each(ref):
     return Block("repeat.each", {"WFInput": attachment(ref)}, "Repeat Results")
 
 
+def apply_tag(tag_name, msg_id_name):
+    """Add the Gmail label named like the tag (an existing one in any case, else a new one) to one message."""
+    labels = http("GET", (LABELS_URL,))
+    set_text("LabelsText", out(add("detect.text", {"WFInput": attachment(out(labels))}, "Text")))
+    set_text("TagLabelId", out(regex_replace(var("LabelsText"), (LABEL_ID_PREFIX, var(tag_name), LABEL_ID_SUFFIX),
+                                             "$1")))
+    comment("No such label leaves the JSON unchanged (it starts with '{'): create the label.")
+    b = if_text(as_text("TagLabelId"), BEGINS_WITH, "{")
+    body = text_action('{"name":"', var(tag_name),
+                       '","labelListVisibility":"labelShow","messageListVisibility":"show"}')
+    created = http("POST", (LABELS_URL,), json_text=body)
+    set_text("TagLabelId", out(dict_value(out(created), "id")))
+    b.end()
+    body = text_action('{"addLabelIds":["', var("TagLabelId"), '"]}')
+    http("POST", (GMAIL + "/", var(msg_id_name), "/modify"), json_text=body)
+
+
 def load_review_config():
     """ReviewUI ("web", "notes" or "both"; default both) and ReviewBase (the review page URL)."""
     set_text("ReviewUI", out(dict_value(var("Config"), "reviewUI")))
@@ -363,11 +389,13 @@ def show_report(title_ref, body_ref, allow_web_ref=None):
 TOKEN, ENGINE, FRONT = "InboxTriage Token", "InboxTriage Engine", "InboxTriage"
 FEEDBACK_CODES = [("k", "KEEP"), ("a", "ARCHIVE"), ("d", "DELETE"), ("l", "SUMMARIZE low"),
                   ("m", "SUMMARIZE moderate"), ("h", "SUMMARIZE high"), ("c", "SUMMARIZE confirmations"),
-                  ("u", "UNSUBSCRIBE"), ("r", "RELEASE")]
+                  ("u", "UNSUBSCRIBE"), ("r", "RELEASE"), ("t", "TAG")]
 FEEDBACK_HELP = ("**Feedback:** start a line with a two-letter code, an optional hint, and a closing parenthesis: "
                  "xa) to archive, or xm I'm interested in shoes) to summarize at moderate and give a hint for the "
                  "rules. Codes: xk keep (back to the inbox), xa archive, xd delete, xl / xm / xh summarize low / "
-                 "moderate / high, xc confirmation, xu unsubscribe, xr release from Kept. A hint can't contain \")\". "
+                 "moderate / high, xc confirmation, xu unsubscribe, xr release from Kept, xt tag only. A hint can't "
+                 "contain \")\". Start a hint with a tag and a semicolon (xk LoR; a student asking for a "
+                 "letter) to add the Gmail label LoR. "
                  "Then share this note to InboxTriage.")
 
 
@@ -602,6 +630,7 @@ def build_engine():
         set_text(name, out(replace(var(name), "&", "＆")))
 
     comment("Feedback runs force a decision per message id: force is 'id=ACTION level;id=ACTION;...'.")
+    set_text("Tag", "")
     set_text("Forced", "no")
     set_text("ForceRaw", out(regex_replace(var("Force"), (FORCE_PREFIX, var("MsgId"), FORCE_SUFFIX), "$1")))
     fb = if_has_value(as_text("Force"))
@@ -618,7 +647,7 @@ def build_engine():
     set_text("Src", "feedback")
     fb.otherwise()
     comment("Sender rules (rules.json 'rules'): From contains 'from' and, if set, Subject contains 'subject'.")
-    for name in ("RuleAction", "RuleLevel", "RuleFlag", "RuleName"):
+    for name in ("RuleAction", "RuleLevel", "RuleFlag", "RuleName", "RuleTag"):
         set_text(name, "")
     rules = repeat_each(var("Rules"))
     set_text("RFrom", out(dict_value(var("Repeat Item 2"), "from")))
@@ -637,6 +666,7 @@ def build_engine():
     set_text("RuleAction", out(dict_value(var("Repeat Item 2"), "action")))
     set_text("RuleLevel", out(dict_value(var("Repeat Item 2"), "level")))
     set_text("RuleFlag", out(dict_value(var("Repeat Item 2"), "flag")))
+    set_text("RuleTag", out(dict_value(var("Repeat Item 2"), "tag")))
     set_text("RuleName", "sender ", var("RFrom"), " ", var("RSubject"))
     b.end()
     rules.end()
@@ -656,6 +686,7 @@ def build_engine():
     set_text("RuleAction", out(dict_value(var("Repeat Item 2"), "action")))
     set_text("RuleLevel", out(dict_value(var("Repeat Item 2"), "level")))
     set_text("RuleFlag", out(dict_value(var("Repeat Item 2"), "flag")))
+    set_text("RuleTag", out(dict_value(var("Repeat Item 2"), "tag")))
     set_text("RuleName", "content '", var("RKey"), "'")
     b.end()
     crules.end()
@@ -690,6 +721,7 @@ def build_engine():
     set_text("Confidence", "1")
     set_text("Reason", "rule: ", var("RuleName"))
     set_text("Src", "rule")
+    set_text("Tag", var("RuleTag"))
     b.end()
 
     fb.end()
@@ -878,8 +910,12 @@ def build_engine():
     b = if_has_value(as_text("Level"))
     set_text("LevelTag", "·", var("Level"))
     b.end()
+    set_text("TagPart", "")
+    b = if_has_value(as_text("Tag"))
+    set_text("TagPart", " · #", var("Tag"))
+    b.end()
     set_text("Item", var("SenderName"), " — ", var("Subject"), " · ", var("Decision"), var("LevelTag"), " · ",
-             var("Op"), " · ", var("Src"), " · id:", var("MsgId"))
+             var("Op"), " · ", var("Src"), var("TagPart"), " · id:", var("MsgId"))
     set_text("SumLine", "")
     b = if_has_value(as_text("Summary"))
     set_text("SumLine", var("Summary"), "\n")
@@ -911,6 +947,10 @@ def build_engine():
     comment("Act unless dryRun is \"true\". Changes add the AutoTriage label (undo: label:AutoTriage); "
             "kept mail gets AutoTriage/Kept.")
     live = if_text(as_text("DryRun"), IS_NOT, "true")
+    comment("A rule's tag adds its Gmail label (live runs only; tags typed in feedback apply even in dry runs).")
+    b = if_has_value(as_text("Tag"))
+    apply_tag("Tag", "MsgId")
+    b.end()
     b = if_text(as_text("Forced"), IS, "yes")
     http("POST", (GMAIL + "/", var("MsgId"), "/untrash"))
     b.end()
@@ -1014,8 +1054,11 @@ def apply_lines(body_name, item="Repeat Item"):
     http("POST", (GMAIL + "/", var("Id"), "/modify"), json_text=body)
     c4.end()
     c3.otherwise()
+    comment("A tag-only correction (xt) keeps the decision: no re-run.")
+    c4 = if_text(as_text("Corrected"), IS_NOT, "TAG")
     set_text("Ids", var("Ids"), var("Id"), ",")
     set_text("Force", var("Force"), var("Id"), "=", var("Corrected"), ";")
+    c4.end()
     c3.end()
     set_text("Applied", var("Applied"), "id:", var("Id"), "=", var("Corrected"), ";\n")
     comment("For the rule proposals: sender address, the item text, and any words written after the id.")
@@ -1034,16 +1077,31 @@ def apply_lines(body_name, item="Repeat Item"):
     set_text("Extra", out(regex_replace(var("Line"), FEEDBACK_HINT_RE, "$1")))
     comment("Only a correction with a hint is about more than this one message, so only those go to the "
             "rule proposals. Without a hint it is an action on this message only.")
+    comment("A hint that starts with 'Tag;' labels the message in Gmail, even in a dry run (it was asked for). "
+            "The rest is the hint for the rules.")
+    set_text("TagName", "")
+    set_text("RuleHint", var("Extra"))
+    set_text("TagMark", out(regex_replace(var("Extra"), TAG_HINT_RE, TAG_MARK + "$1")))
+    c3 = if_text(as_text("TagMark"), BEGINS_WITH, TAG_MARK)
+    set_text("TagName", out(replace(var("TagMark"), TAG_MARK, "")))
+    set_text("RuleHint", out(regex_replace(var("Extra"), TAG_REST_RE, "$1")))
+    apply_tag("TagName", "Id")
+    c3.end()
+    set_text("TagNote", "")
+    c3 = if_has_value(as_text("TagName"))
+    set_text("TagNote", " #", var("TagName"))
+    c3.end()
     set_text("HintTag", " · action only")
-    c3 = if_has_value(as_text("Extra"))
+    c3 = if_has_value(as_text("RuleHint"))
     set_text("HintTag", "")
     set_text("Corrections", var("Corrections"), "- from: ", var("FromAddr"), " | ", var("ItemText"), " | was: ",
-             var("Original"), " | now: ", var("Corrected"), " | hint: ", var("Extra"), "\n")
+             var("Original"), " | now: ", var("Corrected"), " | tag: ", var("TagName"), " | hint: ", var("RuleHint"),
+             "\n")
     c3.end()
     set_text("Pending", var("Pending"), var("Today"), "\t", var("Source"), "\t", var("Id"), "\t", var("Original"),
              "\t", var("Corrected"), "\t", var("Line"), "\n")
     entry = regex_replace(var("Line"), r"^[^)]*\)\s*", "")
-    set_text("Done", var("Done"), "✓ ", var("Corrected"), var("HintTag"), " ← ", out(entry), "\n")
+    set_text("Done", var("Done"), "✓ ", var("Corrected"), var("TagNote"), var("HintTag"), " ← ", out(entry), "\n")
     c2.end()
     c.end()
     ll.end()
@@ -1071,8 +1129,10 @@ def finish_feedback():
         "snippet contains 'keyword'. Only propose a rule the corrections support. Actions: KEEP, ARCHIVE, DELETE, "
         "UNSUBSCRIBE, SUMMARIZE (level low, moderate, high or confirmations).\n\n"
         "Reply with ONLY this JSON, no code fences:\n"
-        '{"sender_rules": [{"from": "", "subject": "", "action": "", "level": "", "reason": "one line"}], '
-        '"content_rules": [{"keyword": "", "action": "", "level": "", "reason": "one line"}]}\n\n'
+        '{"sender_rules": [{"from": "", "subject": "", "action": "", "level": "", "tag": "", "reason": "one line"}], '
+        '"content_rules": [{"keyword": "", "action": "", "level": "", "tag": "", "reason": "one line"}]}\n\n'
+        "When a correction has a tag, put it in the rule's tag field: matching mail then gets that Gmail label. "
+        "A TAG correction keeps the original action.\n\n"
         "Current rules:\n", out(rules_text), "\n\nCorrections:\n", var("Corrections"))
     set_var("ModelStart", out(fmt_date("h:mm:ss a")))
     m = if_text(as_text("FeedbackModel"), IS, "apple")

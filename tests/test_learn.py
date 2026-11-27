@@ -17,9 +17,10 @@ def propose(learn, rows):
 
 
 def test_to_rule(learn):
-    assert learn.to_rule("SUMMARIZE moderate") == ("SUMMARIZE", "moderate")
-    assert learn.to_rule("ARCHIVE") == ("ARCHIVE", "")
+    assert learn.to_rule("SUMMARIZE moderate") == ("SUMMARIZE", "moderate", "")
+    assert learn.to_rule("ARCHIVE") == ("ARCHIVE", "", "")
     assert learn.to_rule("RELEASE") is None
+    assert learn.to_rule("TAG", "KEEP", "LoR") == ("KEEP", "", "LoR")
 
 
 def test_duplicates_from_sharing_twice_are_dropped(learn):
@@ -80,3 +81,23 @@ def test_corrections_without_a_hint_are_actions_only(learn):
             row("m2", "KEEP", "DELETE", "xd not interested in sales) Shop — Sale · KEEP · keep · model · id:m2")]
     hinted, action_only = learn.split_hinted(rows)
     assert [r[2] for r in hinted] == ["m2"] and [r[2] for r in action_only] == ["m1"]
+
+
+def test_tag_and_hint(learn):
+    line = "xk LoR; student asking for a letter) A — B · id:1"
+    assert learn.tag_and_hint(line) == ("LoR", "student asking for a letter")
+    assert learn.tag_and_hint("xk see notes; later) A — B · id:1") == ("", "see notes; later")
+    assert learn.tag_and_hint("xt LoR;) A — B · id:1") == ("LoR", "")
+
+
+def test_tag_only_without_explanation_is_an_action(learn):
+    rows = [row("m1", "KEEP", "TAG", "xt LoR;) A — B · KEEP · keep · model · id:m1")]
+    assert learn.split_hinted(rows) == ([], rows)
+
+
+def test_tagged_corrections_become_tagged_rules(learn):
+    line = "xt LoR; student asking for a letter) A — B · KEEP · keep · model · id:m3"
+    rules, manual, _ = propose(learn, [row("m3", "KEEP", "TAG", line), row("m4", "KEEP", "TAG", line)])
+    assert {"from": "jane@example.org", "subject": "", "action": "KEEP", "level": "", "flag": "",
+            "tag": "LoR"} in rules["rules"]
+    assert not manual

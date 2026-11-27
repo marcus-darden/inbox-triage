@@ -1,5 +1,5 @@
 {
-  "_comment": "Sender rules ('rules') and content keyword rules ('content'), applied before the model. A sender rule matches when From contains 'from' and, if set, Subject contains 'subject'. A content rule matches when Subject or the Gmail snippet contains 'keyword'; content rules win over sender rules. The last match wins. action: KEEP, ARCHIVE, DELETE, UNSUBSCRIBE or SUMMARIZE. level (SUMMARIZE only): low, moderate, high or confirmations. flag: 'needs-you' lists the message under Needs you in the report. Plain-English content rules for the model go in prompts/content-rules.txt.",
+  "_comment": "Sender rules ('rules') and content keyword rules ('content'), applied before the model. A sender rule matches when From contains 'from' and, if set, Subject contains 'subject'. A content rule matches when Subject or the Gmail snippet contains 'keyword'; content rules win over sender rules. The last match wins. action: KEEP, ARCHIVE, DELETE, UNSUBSCRIBE or SUMMARIZE. level (SUMMARIZE only): low, moderate, high or confirmations. flag: 'needs-you' lists the message under Needs you in the report. tag (optional): adds the Gmail label of that name in live runs. Plain-English content rules for the model go in prompts/content-rules.txt.",
   "rules": [
     {
       "from": "noreply@github.example",

@@ -39,7 +39,7 @@ def decode_like_the_shortcut(builder, data):
 ])
 def test_tagged_lines(builder, line, code, hint):
     assert whole(builder.FEEDBACK_MARK_RE, line, "MARKED") == "MARKED"
-    codes = [c for c in "kadlmhcur" if whole(builder.feedback_code_re(c), line, "HIT") == "HIT"]
+    codes = [c for c in "kadlmhcurt" if whole(builder.feedback_code_re(c), line, "HIT") == "HIT"]
     assert codes == [code]
     assert whole(builder.FEEDBACK_HINT_RE, line) == hint
     assert whole(builder.FEEDBACK_ID_RE, line) == "19a2bc3"
@@ -186,6 +186,31 @@ def test_bare_address_is_rewritten(builder, sender, shown):
 def test_tags_after_bullets_and_checkboxes(builder, prefix):
     line = prefix + "Xm a hint) " + LINE
     assert whole(builder.FEEDBACK_MARK_RE, line, "MARKED") == "MARKED"
-    assert [c for c in "kadlmhcur" if whole(builder.feedback_code_re(c), line, "HIT") == "HIT"] == ["m"]
+    assert [c for c in "kadlmhcurt" if whole(builder.feedback_code_re(c), line, "HIT") == "HIT"] == ["m"]
     assert whole(builder.FEEDBACK_HINT_RE, line) == "a hint"
     assert whole(builder.FEEDBACK_ITEM_RE, line) == "Sun & Snow — Warren Miller Is Back"
+
+
+# ---- tags in hints ------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("hint, tag, rest", [
+    ("LoR; student requesting a letter of recommendation", "LoR", "student requesting a letter of recommendation"),
+    ("  grant-2026 ;  budget questions", "grant-2026", "budget questions"),
+    ("LoR;", "LoR", ""),
+    ("student requesting a letter", None, None),          # no tag
+    ("see notes; later", None, None),                     # words with a space before ';' are not a tag
+    ("x" * 25 + "; too long", None, None),
+])
+def test_tag_in_hint(builder, hint, tag, rest):
+    marked = whole(builder.TAG_HINT_RE, hint, builder.TAG_MARK + r"\1")
+    if tag is None:
+        assert not marked.startswith(builder.TAG_MARK)
+        return
+    assert marked == builder.TAG_MARK + tag
+    assert whole(builder.TAG_REST_RE, hint) == rest
+
+
+def test_tag_hint_ends_at_the_first_parenthesis(builder):
+    line = "xk LoR; student (grad) asking) " + LINE
+    assert whole(builder.FEEDBACK_HINT_RE, line) == "LoR; student (grad"
+    assert [c for c in "kadlmhcurt" if whole(builder.feedback_code_re(c), "xt LoR;) " + LINE, "HIT") == "HIT"] == ["t"]

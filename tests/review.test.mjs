@@ -10,9 +10,9 @@ const here = new URL(".", import.meta.url);
 const html = readFileSync(new URL("../docs/review.html", here), "utf8");
 const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
 const page = vm.createContext({ TextDecoder, atob, Blob, Response, DecompressionStream, Uint8Array, DataView });
-vm.runInContext(script + "\n;globalThis.api = { decodePayload, parseReport, feedbackLine, submitText, submitUrl };",
+vm.runInContext(script + "\n;globalThis.api = { decodePayload, parseReport, feedbackLine, submitText, submitUrl, tagOf, buildChoices };",
                 page);
-const { decodePayload, parseReport, feedbackLine, submitText, submitUrl } = page.api;
+const { decodePayload, parseReport, feedbackLine, submitText, submitUrl, tagOf, buildChoices } = page.api;
 const report = readFileSync(new URL("fixtures/demo-report.md", here), "utf8");
 
 const b64url = (buf) => Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -75,4 +75,30 @@ test("submit URL runs InboxTriage with the title and one line per choice", () =>
   assert.equal(decodeURIComponent(url.split("text=")[1]), submitText("Run 1", choices));
   assert.equal(submitText("Run 1", choices),
                "Review page: Run 1\nxd) A — B · KEEP · keep · model · id:1\nxl sales) C — D · ARCHIVE · archive · rule · id:2\n");
+});
+
+test("a tag on the report line is parsed, and the id still is", () => {
+  const r = parseReport("## Would keep\n\nA — B · KEEP · keep · rule · #LoR · id:abc\n");
+  const it = r.sections[0].items[0];
+  assert.equal(it.tag, "LoR");
+  assert.equal(it.id, "abc");
+  assert.equal(it.src, "rule");
+});
+
+test("tags: an identifier and a semicolon at the start of the hint", () => {
+  assert.equal(tagOf("LoR; student requesting a letter"), "LoR");
+  assert.equal(tagOf(" grant-2026 ; budget"), "grant-2026");
+  assert.equal(tagOf("see notes; later"), "");
+  assert.equal(tagOf("no tag here"), "");
+  assert.equal(tagOf("x".repeat(25) + "; long"), "");
+});
+
+test("a tag typed without a button is a tag-only correction; other hints alone are not", () => {
+  const chosen = new Map([["1", { code: "d", line: "L1 · id:1" }]]);
+  const hints = new Map([["1", { hint: "sales", line: "L1 · id:1" }],
+                         ["2", { hint: "LoR; student asking", line: "L2 · id:2" }],
+                         ["3", { hint: "just a note", line: "L3 · id:3" }]]);
+  const out = buildChoices(chosen, hints);
+  // JSON: the page's arrays come from another realm (vm), so compare their contents.
+  assert.equal(JSON.stringify(out.map((c) => [c.code, c.hint])), JSON.stringify([["d", "sales"], ["t", "LoR; student asking"]]));
 });

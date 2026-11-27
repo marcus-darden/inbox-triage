@@ -4,6 +4,7 @@
 
 - Review page: after a Default or Kept run, the Engine opens `docs/review.html` (GitHub Pages) in the browser with the run's report zipped and base64url-encoded after `#v1.` in the link, so it never reaches a server. Each message is a card with decision buttons and a hint field. Submit runs InboxTriage with the corrections as tagged report lines, the same format and parser as a shared note.
 - `reviewUI` config: `"both"` (default: page and note), `"web"` or `"notes"`. `reviewUrl` points a fork at its own page. The note starts with a link to the page.
+- Tags: a hint that starts with `Tag;` ("LoR; student requesting a letter of recommendation") adds the Gmail label `LoR` to that message, even in a dry run, reusing an existing label of that name in any case. New code `xt` tags without changing the decision; on the review page a typed tag alone counts. The rest of the hint goes to the rule proposals, and rules can carry a `tag` that labels future matches in live runs. Report lines show `#tag`.
 - No hint, no rule: corrections without a hint are applied to that message only. Only hinted corrections go to the Locally AI proposals and `bin/learn`, and the proposal prompt says not to generalize beyond the hint.
 - The review page shows each message once (a flagged message used to appear under Needs you and again under its decision).
 - KEEP messages get a two-sentence summary (`prompts/summary-keep.txt`) in the note and on the review page, for context without opening the message.

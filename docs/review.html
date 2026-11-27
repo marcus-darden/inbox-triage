@@ -31,6 +31,9 @@
   .muted { color: var(--muted); font-size: 14px; margin: 2px 0; }
   .card { background: var(--card); border: 2px solid transparent; border-radius: 14px; padding: 12px; margin: 10px 0; }
   .card.set { border-color: var(--on); }
+  .chip { display: inline-block; font-size: 13px; padding: 2px 8px; border-radius: 999px; background: var(--chip);
+          color: var(--accent); margin: 2px 0 4px; }
+  .chip[hidden] { display: none; }
   .who { font-weight: 600; }
   .meta { color: var(--muted); font-size: 13px; margin: 2px 0 6px; }
   .sum { font-size: 14px; margin: 6px 0; white-space: pre-wrap; color: var(--text); }
@@ -55,7 +58,7 @@
 <header>
   <h1 id="title">Inbox Triage review</h1>
   <div id="summary" class="muted"></div>
-  <div class="muted">A correction without a hint changes that message only. Add a hint if you want it to become a rule.</div>
+  <div class="muted">A correction without a hint changes that message only. Add a hint if you want it to become a rule. Start a hint with a tag and a semicolon (LoR; student asking for a letter) to add that Gmail label.</div>
   <div id="error"></div>
 </header>
 <main id="cards"></main>
@@ -68,8 +71,10 @@
 const CODES = [["k", "Keep"], ["a", "Archive"], ["d", "Delete"], ["l", "Low"], ["m", "Moderate"],
                ["h", "High"], ["c", "Confirm"], ["u", "Unsub"], ["r", "Release"]];
 const RETURN_URL = "shortcuts://run-shortcut?name=InboxTriage&input=text&text=";
-// "Sender — Subject · DECISION·level · op · src · id:<id>", the Engine's report line.
-const ITEM_RE = /^(.*) · ([A-Z]+)(?:·([a-z]+))? · (\S+) · (\S+) · id:(\S+)\s*$/;
+// "Sender — Subject · DECISION·level · op · src[ · #tag] · id:<id>", the Engine's report line.
+const ITEM_RE = /^(.*) · ([A-Z]+)(?:·([a-z]+))? · (\S+) · (\S+)(?: · #([A-Za-z0-9_-]+))? · id:(\S+)\s*$/;
+// A hint that starts with "Tag;" labels the message in Gmail; the rest is the hint for the rules.
+const TAG_RE = /^\s*([A-Za-z0-9_-]{1,24})\s*;/;
 
 function base64urlBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/]/g, "");
@@ -116,7 +121,7 @@ function parseItem(line) {
   const dash = m[1].indexOf(" — ");
   return { line: line.trim(), sender: dash < 0 ? m[1] : m[1].slice(0, dash),
            subject: dash < 0 ? "" : m[1].slice(dash + 3), decision: m[2], level: m[3] || "",
-           op: m[4], src: m[5], id: m[6], summary: "", mail: "" };
+           op: m[4], src: m[5], tag: m[6] || "", id: m[7], summary: "", mail: "" };
 }
 
 // The Engine's Markdown report (or the Kept view) → {title, info, sections: [{heading, items, text}]}.
@@ -159,6 +164,22 @@ function feedbackLine(code, hint, itemLine) {
   return "x" + code + (h ? " " + h : "") + ") " + itemLine;
 }
 
+function tagOf(hint) {
+  const m = TAG_RE.exec(hint || "");
+  return m ? m[1] : "";
+}
+
+// Decisions chosen with buttons (id -> {code, line}), plus hints typed on cards (id -> {hint, line}).
+// A card with a tag in its hint and no button is a tag-only correction (code t).
+function buildChoices(chosen, hints) {
+  const out = [];
+  for (const [id, c] of chosen) out.push({ code: c.code, hint: (hints.get(id) || {}).hint || "", line: c.line });
+  for (const [id, h] of hints) {
+    if (!chosen.has(id) && tagOf(h.hint)) out.push({ code: "t", hint: h.hint, line: h.line });
+  }
+  return out;
+}
+
 function submitText(title, choices) {
   const lines = choices.map((c) => feedbackLine(c.code, c.hint, c.line));
   return "Review page: " + (title || "Inbox Triage") + "\n" + lines.join("\n") + "\n";
@@ -172,7 +193,8 @@ function submitUrl(title, choices) {
 
 function boot() {
   const $ = (id) => document.getElementById(id);
-  const chosen = new Map();   // id -> {code, hint, line}
+  const chosen = new Map();   // id -> {code, line}
+  const hints = new Map();    // id -> {hint, line}
   let report = { title: "", sections: [] };
 
   function el(tag, cls, text) {
@@ -183,7 +205,7 @@ function boot() {
   }
 
   function update() {
-    const n = chosen.size;
+    const n = buildChoices(chosen, hints).length;
     $("submit").textContent = "Submit " + n + " correction" + (n === 1 ? "" : "s");
     $("submit").disabled = n === 0;
   }
@@ -192,6 +214,9 @@ function boot() {
     const c = el("div", "card");
     c.append(el("div", "who", it.sender), el("div", "", it.subject),
              el("div", "meta", it.decision + (it.level ? " " + it.level : "") + " · " + it.op + " · " + it.src));
+    const chip = el("span", "chip", it.tag ? "#" + it.tag : "");
+    chip.hidden = !it.tag;
+    c.append(chip);
     if (it.summary) {   // collapsed by default to keep the page short
       const d = el("details", "sum");
       d.append(el("summary", "", "Summary"), el("div", "", it.summary));
@@ -212,15 +237,23 @@ function boot() {
       b.onclick = () => {
         const prev = chosen.get(it.id);
         if (prev && prev.code === code) chosen.delete(it.id);
-        else chosen.set(it.id, { code, hint: hint.value, line: it.line });
+        else chosen.set(it.id, { code, line: it.line });
         row.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
         if (chosen.has(it.id)) b.classList.add("on");
-        c.classList.toggle("set", chosen.has(it.id));
+        c.classList.toggle("set", chosen.has(it.id) || !!tagOf(hint.value));
         update();
       };
       row.append(b);
     });
-    hint.oninput = () => { const ch = chosen.get(it.id); if (ch) ch.hint = hint.value; };
+    hint.oninput = () => {
+      if (hint.value.trim()) hints.set(it.id, { hint: hint.value, line: it.line });
+      else hints.delete(it.id);
+      const t = tagOf(hint.value) || it.tag;
+      chip.textContent = t ? "#" + t : "";
+      chip.hidden = !t;
+      c.classList.toggle("set", chosen.has(it.id) || !!tagOf(hint.value));
+      update();
+    };
     c.append(row, hint);
     return c;
   }
@@ -250,7 +283,7 @@ function boot() {
   }
 
   $("submit").onclick = () => {
-    const choices = [...chosen.values()];
+    const choices = buildChoices(chosen, hints);
     if (!choices.length) return;
     location.href = submitUrl(report.title, choices);
     $("submit").textContent = "Sent " + choices.length + " at " + new Date().toLocaleTimeString() + ". Submit again";

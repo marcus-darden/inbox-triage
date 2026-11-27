@@ -27,6 +27,7 @@ Put a tag at the start of the line: a two-letter code, an optional hint, and `)`
 | `xc)` | summarize as a confirmation |
 | `xu)` | unsubscribe |
 | `xr)` | release from Kept: the next run triages it again |
+| `xt)` | tag only: add the hint's tag, keep the decision |
 
 ```text
 xm this is regular work business) Department Office — Faculty Meeting: Friday, Noon · KEEP · keep · model · id:…
@@ -36,6 +37,7 @@ xd) Music Shop — Shop Black Friday Early! · KEEP·low · keep · model · id:
 - Upper or lower case both work (iOS capitalizes the first letter).
 - Leading spaces, bullets and checkboxes before the code are ignored.
 - The hint is everything up to the first `)`, so it can contain `(` but not `)`.
+- **Tags.** A hint that starts with an identifier and a semicolon, `xk LoR; student requesting a letter of recommendation)`, adds the Gmail label `LoR` to that message (an existing label of that name in any case is reused, otherwise it is created). This happens even in a dry run, because you asked for it on that message. The text after the semicolon is the hint for the rules, and proposed rules can carry the tag (`"tag": "LoR"` in `rules.json`), so future matches get the label in live runs. Tags are letters, digits, `-` and `_`, up to 24 characters; `see notes; later` is not a tag. On the review page, typing a tag without tapping a button submits a tag-only correction.
 - **No hint, no rule.** A correction without a hint is an action on that message only: it is applied and recorded, marked "action only" in the feedback-applied note, and never used for rule proposals (Locally AI or `bin/learn`). Add a hint when you want the correction to generalize, and the proposals stay within what the hint says.
 
 Why typed codes and not checkboxes? Notes' checklist items can be written from Shortcuts, but they can't be read back per note: the checklist query has no filters, and no action returns a note's checklist items.

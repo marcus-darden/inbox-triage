@@ -86,6 +86,9 @@ After each run the **review page** opens in the browser: a card per message with
 | `xc)` | summarize as a confirmation |
 | `xu)` | unsubscribe |
 | `xr)` | release from Kept: triage it again next run |
+| `xt)` | tag only: add the hint's tag as a Gmail label |
+
+Start a hint with a tag and a semicolon, `LoR; student requesting a letter of recommendation`, to label the message `LoR` in Gmail; the rest of the hint goes to the rule proposals, and approved rules can carry the tag.
 
 The shortcut applies each correction, records it in `feedback/pending.tsv`, and asks **Locally AI** (a local LLM app) to propose rule changes from the corrections and your hints. The proposals are only written down. On the Mac, `bin/learn` turns the feedback into a reviewed diff of `rules.json`. Details: [docs/FEEDBACK.md](docs/FEEDBACK.md).
 

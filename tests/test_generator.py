@@ -159,7 +159,8 @@ def test_forced_decision_lookup_works(shortcuts):
     engine = actions_of(shortcuts, "InboxTriage Engine")
     finds = [a["WFWorkflowActionParameters"]["WFReplaceTextFind"] for a in engine
              if a["WFWorkflowActionIdentifier"].endswith("text.replace")
-             and isinstance(a["WFWorkflowActionParameters"].get("WFReplaceTextFind"), dict)]
+             and isinstance(a["WFWorkflowActionParameters"].get("WFReplaceTextFind"), dict)
+             and "MsgId" in str(a["WFWorkflowActionParameters"]["WFReplaceTextFind"])]
     assert len(finds) == 1
     token = finds[0]["Value"]
     (ref,) = token["attachmentsByRange"].values()
@@ -183,3 +184,40 @@ def test_every_prompt_file_read_ships_as_an_example(shortcuts):
     assert "EmailTriage/prompts/summary-keep.txt" in paths
     missing = [p for p in paths if not os.path.exists(os.path.join(REPO, "icloud", "prompts", os.path.basename(p)))]
     assert not missing
+
+
+LABELS_JSON = """{
+  "labels": [
+    {
+      "id": "CHAT",
+      "name": "CHAT",
+      "type": "system"
+    },
+    {
+      "id": "Label_7",
+      "name": "LOR",
+      "type": "user"
+    },
+    {
+      "id": "Label_8",
+      "name": "LoRe",
+      "type": "user"
+    }
+  ]
+}"""
+
+
+@pytest.mark.parametrize("name", NAMES[1:])
+def test_tag_label_lookup_finds_existing_labels_in_any_case(shortcuts, name):
+    """Tags reuse a Gmail label with the same name in any case; no match leaves the JSON (starting '{')."""
+    import re
+
+    finds = [a["WFWorkflowActionParameters"]["WFReplaceTextFind"]["Value"] for a in actions_of(shortcuts, name)
+             if a["WFWorkflowActionIdentifier"].endswith("text.replace")
+             and isinstance(a["WFWorkflowActionParameters"].get("WFReplaceTextFind"), dict)
+             and '"name"' in str(a["WFWorkflowActionParameters"]["WFReplaceTextFind"])]
+    assert finds
+    for token in finds:
+        for tag, want in [("LoR", "Label_7"), ("lor", "Label_7"), ("LoRe", "Label_8"), ("CHAT", "CHAT")]:
+            assert re.sub(token["string"].replace("￼", tag), r"\1", LABELS_JSON, count=1) == want
+        assert re.sub(token["string"].replace("￼", "Grants"), r"\1", LABELS_JSON, count=1).startswith("{")

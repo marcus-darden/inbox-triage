@@ -22,7 +22,8 @@ const r = ctx.api.parseReport(fs.readFileSync(process.argv[2], "utf8"));
 const items = r.sections.flatMap((s) => s.items);
 const choices = [{ code: "d", hint: "", line: items[0].line },
                  { code: "m", hint: "regular work (dept) business", line: items[1].line },
-                 { code: "r", hint: "", line: items[2].line }];
+                 { code: "r", hint: "", line: items[2].line },
+                 { code: "t", hint: "LoR; student asking for a letter", line: items[3].line }];
 process.stdout.write(JSON.stringify({ text: ctx.api.submitText(r.title, choices),
                                       ids: choices.map((c, i) => items[i].id),
                                       decisions: choices.map((c, i) => items[i].decision) }));
@@ -48,11 +49,14 @@ def test_input_is_routed_to_feedback(submitted):
 def test_each_line_parses_like_a_tagged_note_line(builder, submitted):
     lines = [ln for ln in submitted["text"].split("\n")
              if whole(builder.FEEDBACK_MARK_RE, ln, "MARKED") == "MARKED"]
-    assert len(lines) == 3
-    codes = [[c for c in "kadlmhcur" if whole(builder.feedback_code_re(c), ln, "HIT") == "HIT"] for ln in lines]
-    assert codes == [["d"], ["m"], ["r"]]
+    assert len(lines) == 4
+    codes = [[c for c in "kadlmhcurt" if whole(builder.feedback_code_re(c), ln, "HIT") == "HIT"] for ln in lines]
+    assert codes == [["d"], ["m"], ["r"], ["t"]]
     assert [whole(builder.FEEDBACK_ID_RE, ln) for ln in lines] == submitted["ids"]
     assert [whole(builder.FEEDBACK_ORIGINAL_RE, ln) for ln in lines] == submitted["decisions"]
     assert whole(builder.FEEDBACK_HINT_RE, lines[1]) == "regular work (dept business"
     assert whole(builder.FEEDBACK_HINT_RE, lines[0]) == ""
     assert not re.search(r"\) \)", lines[1])
+    hint = whole(builder.FEEDBACK_HINT_RE, lines[3])
+    assert whole(builder.TAG_HINT_RE, hint, builder.TAG_MARK + r"\1") == builder.TAG_MARK + "LoR"
+    assert whole(builder.TAG_REST_RE, hint) == "student asking for a letter"

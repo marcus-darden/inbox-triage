@@ -60,8 +60,12 @@ def sender_address(token, msg_id):
 
 
 # The hint between a feedback code and the first ')', as in the shortcut's FEEDBACK_HINT_RE.
-HINT_RE = re.compile(r"^[\s\u2022\u25e6\u25aa\u2610\u2611\u2612\u2713\u2714\u25cb\u25cf*\-]*x[kadlmhcur]"
+HINT_RE = re.compile(r"^[\s\u2022\u25e6\u25aa\u2610\u2611\u2612\u2713\u2714\u25cb\u25cf*\-]*x[kadlmhcurt]"
                      r"(?:\s+([^)]*?))?\s*\)", re.I)
+
+
+# "LoR; student asking for a letter": a tag (a Gmail label) before the hint for the rules.
+TAG_RE = re.compile(r"^\s*([A-Za-z0-9_-]{1,24})\s*;\s*([\s\S]*)$")
 
 
 def hint(line):
@@ -69,19 +73,30 @@ def hint(line):
     return (m.group(1) or "").strip() if m else ""
 
 
+def tag_and_hint(line):
+    """('LoR', 'student asking for a letter') from 'xk LoR; student asking for a letter) …'; ('', hint) without
+    a tag."""
+    h = hint(line)
+    m = TAG_RE.match(h)
+    return (m.group(1), m.group(2).strip()) if m else ("", h)
+
+
 def split_hinted(rows):
     """(rows with a hint, rows without). A correction without a hint is an action on that one message,
     never evidence for a rule."""
-    hinted = [r for r in rows if len(r) > 5 and hint(r[5])]
+    hinted = [r for r in rows if len(r) > 5 and tag_and_hint(r[5])[1]]
     return hinted, [r for r in rows if r not in hinted]
 
 
-def to_rule(corrected):
-    """'SUMMARIZE low' -> ('SUMMARIZE', 'low'); 'RELEASE' -> None (not a rule)."""
+def to_rule(corrected, original="", tag=""):
+    """'SUMMARIZE low' -> ('SUMMARIZE', 'low', tag); 'RELEASE' -> None (not a rule). A tag-only correction
+    (TAG) keeps the original action."""
+    if corrected == "TAG":
+        corrected = original
     parts = corrected.split()
-    if not parts or parts[0] == "RELEASE":
+    if not parts or parts[0] in ("RELEASE", "TAG"):
         return None
-    return parts[0], (parts[1] if len(parts) > 1 else "")
+    return parts[0], (parts[1] if len(parts) > 1 else ""), tag
 
 
 def unique_rows(rows):
@@ -104,20 +119,27 @@ def propose(rows, rules, lookup):
     by_sender = collections.defaultdict(list)
     for _date, _note, msg_id, original, corrected, *line in rows:
         by_sender[lookup(msg_id)].append((original, corrected, line[0] if line else ""))
+
+    def target(original, corrected, line):
+        return to_rule(corrected, original, tag_and_hint(line)[0])
+
     rules = json.loads(json.dumps(rules))  # copy
     manual = []
     for addr, items in sorted(by_sender.items()):
-        targets = {to_rule(c) for _, c, _ in items} - {None}
+        targets = {target(o, c, line) for o, c, line in items} - {None}
         if not addr or len(targets) != 1:
             manual += [(addr, o, c, line) for o, c, line in items]
             continue
-        action, level = targets.pop()
+        action, level, tag = targets.pop()
         if action == "KEEP" and len(items) < 2:
             manual += [(addr, o, c, line) for o, c, line in items]
             continue
         # Replace any sender rule (without a subject condition) that already matches this address.
         rules["rules"] = [r for r in rules["rules"] if r.get("subject") or r["from"].lower() not in addr]
-        rules["rules"].append({"from": addr, "subject": "", "action": action, "level": level, "flag": ""})
+        rule = {"from": addr, "subject": "", "action": action, "level": level, "flag": ""}
+        if tag:
+            rule["tag"] = tag
+        rules["rules"].append(rule)
     return rules, manual, len(by_sender)
 
 
