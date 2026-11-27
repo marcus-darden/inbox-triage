@@ -2,6 +2,8 @@
 
 ## 0.3.0 (unreleased)
 
+- Nothing blocks a run any more: every message (errors, "Rules updated", "No new feedback", Clean up) is a notification, not an alert that waited unseen when you had switched apps. Errors still stop the run, after saving `log/last-error.txt`. SETUP.md lists the one-time permission prompts. Version 0.3.1.
+
 - Approve rules on the phone: after Apply feedback (or from the menu's Review proposed rules), the review page shows each proposed rule with its hint and what it replaces, with Approve/Reject. Saving sends the new rules.json to InboxTriage, which checks its length and shape, backs up the old file in `feedback/`, writes it, and logs every decision in `feedback/rules-log.txt`. Rejected proposals don't come back.
 - New rules no longer remove broader rules; they are added last and override them for their own address (last match wins), in both bin/learn and the page.
 - `bin/deploy` and `bin/learn` pull phone-approved rules into `local/` first and stop if both sides changed.

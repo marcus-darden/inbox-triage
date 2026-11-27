@@ -53,6 +53,16 @@ local/prompts/*.txt      optional overrides of icloud/prompts/*.txt
 | `reviewUI` | `"both"` | Where a run's report goes: `"both"` (review page and note), `"web"` or `"notes"`. |
 | `reviewUrl` | this repo's Pages | The review page. A fork can serve its own `docs/review.html`. |
 
+### Permission prompts, once
+
+The shortcuts never stop to ask you anything during a run: messages arrive as notifications. iOS itself still asks permission the first time a shortcut reaches a new place, and while it waits the run waits too, unseen if you have switched apps. Open the Shortcuts app to see a waiting prompt; if none appears there, stop the run from the Dynamic Island and run it again. The two steps below avoid this. Answer **Always Allow** to each, from a run started from the tile, so they don't come back:
+
+- InboxTriage Token: `oauth2.googleapis.com` and the `.config/inbox-triage` folder.
+- InboxTriage Engine: `gmail.googleapis.com` (messages and, for tags, labels), the `EmailTriage` folder, Notes, Use Model, and opening the review page in your browser.
+- InboxTriage: the same, plus Locally AI.
+
+If a prompt keeps coming back, check **Settings > Apps > Shortcuts > Advanced > Allow Sharing Large Amounts of Data** (on), and in the Shortcuts app open the shortcut's **ⓘ > Privacy** to see or reset what it may access. The browser's own "Open in Shortcuts?" question when you Submit on the review page comes from the browser and can't be turned off.
+
 ## 4. Build and deploy (Mac)
 
 ```sh

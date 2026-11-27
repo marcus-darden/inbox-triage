@@ -34,7 +34,7 @@ CONFIG_FOLDER = {
 # The review page (docs/review.html on GitHub Pages). config.json "reviewUrl" overrides it for a fork.
 REVIEW_URL = "https://marcus-darden.github.io/inbox-triage/review.html"
 
-VERSION = "0.3.0"  # shown at the end of each report, so a run shows which Engine made it
+VERSION = "0.3.1"  # shown at the end of each report, so a run shows which Engine made it
 
 LEVELS = ["low", "moderate", "high", "confirmations"]
 DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
@@ -312,8 +312,16 @@ def if_no_value(ref):
                                  "WFCondition": NO_VALUE}, "If Result")
 
 
+def alert(params):
+    """Tell the user something without blocking the run: a notification, not Show Alert. An alert waits for a tap,
+    and when the run is in the background (the user switched apps) it waits unseen and the run never finishes."""
+    message = params["WFAlertActionMessage"]
+    add("notification", {"WFNotificationActionTitle": text(params.get("WFAlertActionTitle", "Inbox Triage")),
+                         "WFNotificationActionBody": message if isinstance(message, dict) else text(message)})
+
+
 def secrets_alert():
-    add("alert", {"WFAlertActionTitle": "Inbox Triage",
+    alert({"WFAlertActionTitle": "Inbox Triage",
                   "WFAlertActionMessage": "Couldn't read CLIENT_ID, CLIENT_SECRET and REFRESH_TOKEN from "
                                           "iCloud Drive/" + SECRETS_DIR + "/" + SECRETS_PATH +
                                           ". In the Shortcuts app on a "
@@ -521,7 +529,7 @@ def build_token():
     b = if_no_value(as_text("AccessToken"))
     fail = text_action("Token exchange failed. Google said: ", out(token))  # an error reply holds no secrets
     save_file(out(fail), "EmailTriage/log/last-error.txt")
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionMessage": text(out(fail)),
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionMessage": text(out(fail)),
                   "WFAlertActionCancelButtonShown": False})
     add("exit", {})
     b.end()
@@ -594,7 +602,7 @@ def build_engine():
     b = if_no_value(var("Messages"))
     fail = text_action("No messages listed.\nURL: ", var("ListURL"), "\nGmail said: ", var("Listing"))
     save_file(out(fail), "EmailTriage/log/last-error.txt")
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionMessage": text(out(fail)),
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionMessage": text(out(fail)),
                   "WFAlertActionCancelButtonShown": False})
     add("exit", {})
     b.end()
@@ -1233,7 +1241,7 @@ def finish_feedback():
     n_skipped = add("count", {"WFCountType": "Items", "Input": attachment(var("SkippedList")),
                               "WFInput": attachment(var("SkippedList"))}, "Count")
     start = regex_replace(var("Source"), r"^([\s\S]{0,120})[\s\S]*$", "$1")
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
                   "WFAlertActionMessage": text(
                       "No new feedback lines. Start a line with a code and ), e.g. xa) or xm a hint) "
                       "(codes xk, xa, xd, xl, xm, xh, xc, xu, xr).\n\nTagged lines found: ", out(n_tagged),
@@ -1385,7 +1393,7 @@ def build_front():
     c = if_text(as_text("PendingRules"), CONTAINS, "_rules")
     open_proposals(var("PendingRules"))
     c.otherwise()
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
                   "WFAlertActionMessage": "No proposed rules are waiting."})
     c.end()
     b.end()
@@ -1423,12 +1431,12 @@ def build_front():
     old_log = text_action(out(get_file("EmailTriage/feedback/rules-log.txt", required=False)))
     save_file(out(text_action(out(old_log), out(ldec))), "EmailTriage/feedback/rules-log.txt")
     save_file(out(text_action("No pending proposals.\n")), "EmailTriage/feedback/proposed-rules.txt")
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
                   "WFAlertActionMessage": text("Rules updated. The previous rules.json is in feedback/rules-backup-",
                                                out(stamp), ".txt, and your decisions are in "
                                                "feedback/rules-log.txt.")})
     c.otherwise()
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
                   "WFAlertActionMessage": text("Rules not changed: the update from the review page didn't arrive "
                                                "intact (expected ", var("RLen"), " characters, got ", var("NewLen"),
                                                "). Open Review proposed rules and save again.")})
@@ -1453,7 +1461,7 @@ def build_front():
     count = add("count", {"WFCountType": "Items", "Input": attachment(out(old_notes)),
                           "WFInput": attachment(out(old_notes))}, "Count")
     add("com.apple.Notes.DeleteNotesLinkAction", {"entities": attachment(out(old_notes))})
-    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+    alert({"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
                   "WFAlertActionMessage": text("Deleted ", out(count), " report notes older than 7 days.")})
     b.end()
 

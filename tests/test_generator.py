@@ -264,3 +264,15 @@ def test_rules_json_is_written_only_after_a_backup_and_as_a_named_file(shortcuts
             if a["WFWorkflowActionIdentifier"].endswith("documentpicker.save"):
                 assert a["WFWorkflowActionParameters"]["WFFileDestinationPath"]["Value"]["string"] != \
                     "EmailTriage/rules.json"
+
+
+def test_nothing_blocks_after_the_opening_choices(shortcuts):
+    """A dialog shown while the run is in the background (the user switched apps) waits unseen and the run never
+    finishes. Messages are notifications; the only questions are InboxTriage's menu and Custom's questions, asked
+    before the Engine starts, and Clean up's delete confirmation, which iOS asks."""
+    for name in NAMES:
+        idents = [a["WFWorkflowActionIdentifier"] for a in actions_of(shortcuts, name)]
+        assert "is.workflow.actions.alert" not in idents, name
+        if name != "InboxTriage":
+            assert not {"is.workflow.actions.ask", "is.workflow.actions.choosefrommenu",
+                        "is.workflow.actions.previewdocument", "is.workflow.actions.showresult"} & set(idents), name
