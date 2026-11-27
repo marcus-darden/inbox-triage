@@ -221,3 +221,18 @@ def test_tag_label_lookup_finds_existing_labels_in_any_case(shortcuts, name):
         for tag, want in [("LoR", "Label_7"), ("lor", "Label_7"), ("LoRe", "Label_8"), ("CHAT", "CHAT")]:
             assert re.sub(token["string"].replace("￼", tag), r"\1", LABELS_JSON, count=1) == want
         assert re.sub(token["string"].replace("￼", "Grants"), r"\1", LABELS_JSON, count=1).startswith("{")
+
+
+@pytest.mark.parametrize("name, variables", [("InboxTriage Engine", {"SenderName", "Subject", "Summary"}),
+                                             ("InboxTriage", {"SenderName", "Subject"})])
+def test_note_text_has_no_bare_at_signs(shortcuts, name, variables):
+    """Notes turns an address (a Google Calendar invite puts one in the subject) into a link with a large gap
+    after it, so text written into notes shows '@' as the full-width '＠', as '&' became '＆'."""
+    replaced = set()
+    for a in actions_of(shortcuts, name):
+        p = a["WFWorkflowActionParameters"]
+        if a["WFWorkflowActionIdentifier"].endswith("text.replace") and p.get("WFReplaceTextFind") == "@":
+            assert p["WFReplaceTextReplace"]["Value"]["string"] == "\uff20"
+            refs = p["WFInput"]["Value"]["attachmentsByRange"].values()
+            replaced |= {r.get("VariableName") for r in refs}
+    assert variables <= replaced

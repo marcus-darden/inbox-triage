@@ -34,7 +34,7 @@ CONFIG_FOLDER = {
 # The review page (docs/review.html on GitHub Pages). config.json "reviewUrl" overrides it for a fork.
 REVIEW_URL = "https://marcus-darden.github.io/inbox-triage/review.html"
 
-VERSION = "0.2.0"  # shown at the end of each report, so a run shows which Engine made it
+VERSION = "0.2.1"  # shown at the end of each report, so a run shows which Engine made it
 
 LEVELS = ["low", "moderate", "high", "confirmations"]
 DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
@@ -638,6 +638,7 @@ def build_engine():
     for name in ("SenderName", "Subject"):
         set_text(name, out(regex_replace(var(name), r"[\s\u00a0\u200b\u200c\u200d\ufeff]+", " ")))
         set_text(name, out(replace(var(name), "&", "＆")))
+        set_text(name, out(replace(var(name), "@", "＠")))
 
     comment("Feedback runs force a decision per message id: force is 'id=ACTION level;id=ACTION;...'.")
     set_text("Tag", "")
@@ -820,6 +821,7 @@ def build_engine():
         set_text("Summary", out(regex_replace(var("Summary"), r"[\u00a0\u200b\u200c\u200d\ufeff\r]", " ")))
         set_text("Summary", out(regex_replace(var("Summary"), r"\n\s*\n+", "\n")))
         set_text("Summary", out(replace(var("Summary"), "&", "＆")))
+        set_text("Summary", out(replace(var("Summary"), "@", "＠")))
 
     b = if_text(as_text("Decision"), IS, "KEEP")
     summarize("PSum_keep")
@@ -1114,7 +1116,8 @@ def apply_lines(body_name, item="Repeat Item"):
     c3.end()
     set_text("Pending", var("Pending"), var("Today"), "\t", var("Source"), "\t", var("Id"), "\t", var("Original"),
              "\t", var("Corrected"), "\t", var("Line"), "\n")
-    entry = regex_replace(var("Line"), r"^[^)]*\)\s*", "")
+    comment("Notes links an email address and leaves a large gap after it: show '@' as '＠' (U+FF20).")
+    entry = replace(out(regex_replace(var("Line"), r"^[^)]*\)\s*", "")), "@", "＠")
     set_text("Done", var("Done"), "✓ ", var("Corrected"), var("TagNote"), var("HintTag"), " ← ", out(entry), "\n")
     c2.end()
     c.end()
@@ -1291,6 +1294,7 @@ def build_front():
     for name in ("SenderName", "Subject"):
         set_text(name, out(regex_replace(var(name), r"[\s\u00a0\u200b\u200c\u200d\ufeff]+", " ")))
         set_text(name, out(replace(var(name), "&", "＆")))
+        set_text(name, out(replace(var(name), "@", "＠")))
     set_text("MessageIdHdr", out(regex_replace(var("MessageIdHdr"), r"\s+", "")))
     mid = add("urlencode", {"WFInput": text(var("MessageIdHdr"))}, "URL Encoded Text")
     append_var("KeptItems", out(text_action(var("SenderName"), " — ", var("Subject"), " · KEEP · keep · kept · id:",
