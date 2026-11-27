@@ -54,7 +54,7 @@ flowchart LR
   MAC -->|"approved rules"| CF
 ```
 
-1. **InboxTriage** is what you run. It shows a menu (Default, Kept, Custom, Apply feedback, Review proposed rules, Clean up old reports). A time-of-day automation runs it with the input `default`, which skips the menu.
+1. **InboxTriage** is what you run. It shows a menu (Open last review, Default, Kept, Custom, Apply feedback, Review proposed rules, Clean up old reports). A time-of-day automation runs it with the input `default`, which skips the menu.
 2. **InboxTriage Engine** lists up to 25 inbox messages older than `ignoreHours`, skipping ones already marked Kept. For each message:
    - **Rules first.** Sender rules (from address, optionally with a subject) and content keyword rules from `rules.json`.
    - **Then the model.** Apple's on-device model, with prompts read from iCloud Drive at run time. Low confidence, IMPORTANT and STARRED mean the message is kept.

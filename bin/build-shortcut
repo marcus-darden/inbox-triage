@@ -34,7 +34,7 @@ CONFIG_FOLDER = {
 # The review page (docs/review.html on GitHub Pages). config.json "reviewUrl" overrides it for a fork.
 REVIEW_URL = "https://marcus-darden.github.io/inbox-triage/review.html"
 
-VERSION = "0.3.1"  # shown at the end of each report, so a run shows which Engine made it
+VERSION = "0.3.2"  # shown at the end of each report, so a run shows which Engine made it
 
 LEVELS = ["low", "moderate", "high", "confirmations"]
 DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
@@ -381,9 +381,13 @@ def open_review_url():
     add("openurl", {"WFInput": attachment(out(url))})
 
 
-def show_report(title_ref, body_ref, allow_web_ref=None):
+def show_report(title_ref, body_ref, allow_web_ref=None, done_ref=None):
     """The report as a note and/or the review page, per ReviewUI. The page gets '# Title' plus the report,
-    zipped (Make Archive) and base64url-encoded after '#v1.' in the link, so it never reaches a server."""
+    zipped (Make Archive) and base64url-encoded after '#v1.' in the link, so it never reaches a server.
+
+    Order matters when the run is in the background (the user switched apps): iOS may not let it open Notes or
+    the browser. So the link is saved first (InboxTriage > Open last review), then the note, then a notification,
+    and opening the page is the very last step: if it fails, nothing is lost."""
     set_text("ReviewLink", "")
     set_text("ShowWeb", "no")
     b = if_text(as_text("ReviewUI"), IS_NOT, "notes")
@@ -409,9 +413,15 @@ def show_report(title_ref, body_ref, allow_web_ref=None):
                                                    "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
     c.end()
     b.end()
+    set_text("DoneMore", "")
     b = if_text(as_text("ShowWeb"), IS, "yes")
-    url = add("url", {"WFURLActionURL": text(var("ReviewURL"))}, "URL")
-    add("openurl", {"WFInput": attachment(out(url))})
+    set_text("DoneMore", " If the review page didn't open: InboxTriage > Open last review.")
+    b.end()
+    if done_ref is not None:
+        add("notification", {"WFNotificationActionTitle": text("Inbox Triage"),
+                             "WFNotificationActionBody": text(done_ref, var("DoneMore"))})
+    b = if_text(as_text("ShowWeb"), IS, "yes")
+    open_review_url()
     b.end()
 
 
@@ -1057,9 +1067,7 @@ def build_engine():
     b = if_text(as_text("RunLabel"), IS, "feedback")
     set_text("AllowWeb", "no")
     b.end()
-    show_report(var("Title"), out(report), as_text("AllowWeb"))
-    add("notification", {"WFNotificationActionTitle": text("Inbox Triage"),
-                         "WFNotificationActionBody": text(var("Counts"))})
+    show_report(var("Title"), out(report), as_text("AllowWeb"), var("Counts"))
 
 
 def apply_lines(body_name, item="Repeat Item"):
@@ -1272,7 +1280,7 @@ def build_front():
     c = if_text(as_text("Input"), CONTAINS, "id:")
     set_text("Mode", "shared")
     c.otherwise()
-    menu = [("Default", "default"), ("Kept", "kept"), ("Custom", "custom"),
+    menu = [("Open last review", "lastreview"), ("Default", "default"), ("Kept", "kept"), ("Custom", "custom"),
             ("Apply feedback (newest notes)", "feedback"), ("Review proposed rules", "proposals"),
             ("Clean up old reports", "cleanup")]
     m = Menu("Inbox Triage", [t for t, _ in menu])
@@ -1385,6 +1393,17 @@ def build_front():
     apply_lines("NoteBody", item="Repeat Item 2")
     nl.end()
     finish_feedback()
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "lastreview")
+    comment("The review page of the last run, saved by the Engine (a backgrounded run may not open the browser).")
+    set_text("ReviewURL", out(get_file("EmailTriage/log/last-review-url.txt", required=False)))
+    c = if_text(as_text("ReviewURL"), BEGINS_WITH, "http")
+    open_review_url()
+    c.otherwise()
+    alert({"WFAlertActionTitle": "Inbox Triage",
+           "WFAlertActionMessage": "No review page saved yet. Run Default first."})
+    c.end()
     b.end()
 
     b = if_text(as_text("Mode"), IS, "proposals")

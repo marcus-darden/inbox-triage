@@ -2,6 +2,8 @@
 
 ## 0.3.0 (unreleased)
 
+- A run's end works in the background: the review link is saved before anything opens, the note comes next, then a notification ("…If the review page didn't open: InboxTriage > Open last review"), and opening the page is the last step. New menu item **Open last review**. Version 0.3.2.
+
 - Nothing blocks a run any more: every message (errors, "Rules updated", "No new feedback", Clean up) is a notification, not an alert that waited unseen when you had switched apps. Errors still stop the run, after saving `log/last-error.txt`. SETUP.md lists the one-time permission prompts. Version 0.3.1.
 
 - Approve rules on the phone: after Apply feedback (or from the menu's Review proposed rules), the review page shows each proposed rule with its hint and what it replaces, with Approve/Reject. Saving sends the new rules.json to InboxTriage, which checks its length and shape, backs up the old file in `feedback/`, writes it, and logs every decision in `feedback/rules-log.txt`. Rejected proposals don't come back.

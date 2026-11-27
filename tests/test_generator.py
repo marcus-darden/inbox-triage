@@ -276,3 +276,20 @@ def test_nothing_blocks_after_the_opening_choices(shortcuts):
         if name != "InboxTriage":
             assert not {"is.workflow.actions.ask", "is.workflow.actions.choosefrommenu",
                         "is.workflow.actions.previewdocument", "is.workflow.actions.showresult"} & set(idents), name
+
+
+def test_end_of_run_saves_the_link_and_opens_the_page_last(shortcuts):
+    """A run in the background may not be allowed to open Notes or the browser. Save the review link first
+    (InboxTriage > Open last review), then the note and the notification, and open the page as the last step."""
+    acts = actions_of(shortcuts, "InboxTriage Engine")
+    idents = [a["WFWorkflowActionIdentifier"] for a in acts]
+    paths = [a["WFWorkflowActionParameters"].get("WFFileDestinationPath", {}).get("Value", {}).get("string")
+             for a in acts]
+    saved = paths.index("EmailTriage/log/last-review-url.txt")
+    note = max(i for i, x in enumerate(idents) if x == "com.apple.mobilenotes.SharingExtension")
+    notice = max(i for i, x in enumerate(idents) if x.endswith(".notification"))
+    opened = max(i for i, x in enumerate(idents) if x.endswith(".openurl"))
+    assert saved < note < notice < opened
+    front = [a["WFWorkflowActionParameters"].get("WFMenuItems") for a in actions_of(shortcuts, "InboxTriage")
+             if a["WFWorkflowActionParameters"].get("WFMenuItems")]
+    assert front[0][0] == "Open last review"
