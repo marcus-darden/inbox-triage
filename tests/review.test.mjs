@@ -9,10 +9,15 @@ import vm from "node:vm";
 const here = new URL(".", import.meta.url);
 const html = readFileSync(new URL("../docs/review.html", here), "utf8");
 const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
-const page = vm.createContext({ TextDecoder, atob, Blob, Response, DecompressionStream, Uint8Array, DataView });
-vm.runInContext(script + "\n;globalThis.api = { decodePayload, parseReport, feedbackLine, submitText, submitUrl, tagOf, buildChoices };",
+const page = vm.createContext({ TextDecoder, atob, btoa, Blob, Response, DecompressionStream, Uint8Array, DataView });
+vm.runInContext(script + "\n;globalThis.api = { decodePayload, parseReport, feedbackLine, submitText, submitUrl, tagOf, buildChoices, " +
+                "isProposals, splitBundle, parseProposals, applyRules, replaced, ruleText, rulesUpdateText, " +
+                "rejectedBefore, wasRejected };",
                 page);
-const { decodePayload, parseReport, feedbackLine, submitText, submitUrl, tagOf, buildChoices } = page.api;
+const { decodePayload, parseReport, feedbackLine, submitText, submitUrl, tagOf, buildChoices, isProposals,
+        splitBundle, parseProposals, applyRules, replaced, ruleText, rulesUpdateText, rejectedBefore,
+        wasRejected } = page.api;
+const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));   // values from another realm (vm)
 const report = readFileSync(new URL("fixtures/demo-report.md", here), "utf8");
 
 const b64url = (buf) => Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -101,4 +106,62 @@ test("a tag typed without a button is a tag-only correction; other hints alone a
   const out = buildChoices(chosen, hints);
   // JSON: the page's arrays come from another realm (vm), so compare their contents.
   assert.equal(JSON.stringify(out.map((c) => [c.code, c.hint])), JSON.stringify([["d", "sales"], ["t", "LoR; student asking"]]));
+});
+
+const RULES = { _comment: "kept", rules: [{ from: "@deals.example.com", subject: "", action: "UNSUBSCRIBE", level: "", flag: "" },
+                                       { from: "bot@example.org", subject: "Weekly", action: "DELETE", level: "", flag: "" }],
+                content: [{ keyword: "letter of recommendation", action: "KEEP", level: "", flag: "needs-you" }] };
+const PROPOSALS = "```json\n" + JSON.stringify({
+  sender_rules: [{ from: "promo@deals.example.com", subject: "", action: "summarize", level: "Low", tag: "", reason: "sales" },
+                 { from: "x@example.com", action: "SUMMARIZE", level: "", reason: "no level" },
+                 { from: "", action: "DELETE" }],
+  content_rules: [{ keyword: "Letter of Recommendation", action: "KEEP", level: "", tag: "LoR", reason: "students" },
+                  { keyword: "grant", action: "ARCHIVE", tag: "bad tag" }] }) + "\n```";
+
+test("a proposals bundle is told apart from a report and split into its parts", () => {
+  const text = "# Proposed rules, Fri\n=== proposals ===\n{}\n=== rules ===\n{\"rules\":[]}\n=== log ===\n\n";
+  assert.ok(isProposals(text));
+  assert.ok(!isProposals(readFileSync(new URL("fixtures/demo-report.md", here), "utf8")));
+  same(splitBundle(text), { title: "Proposed rules, Fri", proposals: "{}", rules: '{"rules":[]}', log: "" });
+});
+
+test("proposals are normalized and invalid ones are set aside", () => {
+  const p = parseProposals(PROPOSALS);
+  same(p.ok.map((x) => [x.kind, x.rule]), [
+    ["sender", { from: "promo@deals.example.com", subject: "", action: "SUMMARIZE", level: "low", flag: "" }],
+    ["content", { keyword: "Letter of Recommendation", action: "KEEP", level: "", flag: "", tag: "LoR" }]]);
+  same(p.bad.map((x) => x.error), ["SUMMARIZE needs a level", "sender rule without 'from'", "bad tag 'bad tag'"]);
+  assert.equal(parseProposals("Sorry, I can't").bad.length, 1);
+});
+
+test("approved rules replace the rules they supersede; others stay", () => {
+  const p = parseProposals(PROPOSALS).ok;
+  same(replaced(RULES, p[0].kind, p[0].rule).map((r) => r.from), []);   // broader rule stays
+  const out = applyRules(RULES, p);
+  same(out.rules.map((r) => r.from), ["@deals.example.com", "bot@example.org", "promo@deals.example.com"]);
+  same(out.content.map((r) => r.tag || ""), ["LoR"]);
+  assert.equal(out._comment, "kept");
+  assert.equal(RULES.rules.length, 2);   // input untouched
+  assert.equal(ruleText("content", p[1].rule), "Subject or preview contains “Letter of Recommendation” → keep, label #LoR");
+});
+
+test("the rules update carries its length and decodes to the same JSON", () => {
+  const rules = { rules: [{ from: "café@example.com", subject: "", action: "KEEP", level: "", flag: "" }], content: [] };
+  const text = rulesUpdateText(rules, [{ decision: "approved", kind: "sender", rule: rules.rules[0] }]);
+  const [head, r64, l64] = text.split("\n");
+  const json = Buffer.from(r64, "base64").toString("latin1");
+  assert.equal(head, "RULES-UPDATE v1 len=" + json.length);
+  assert.ok(/^[\x00-\x7f]*$/.test(json));          // ASCII, so the shortcut counts the same characters
+  same(JSON.parse(json), rules);
+  assert.match(Buffer.from(l64, "base64").toString(), /"decision": "approved"/);
+});
+
+test("rejected proposals are recognized from the log", () => {
+  const rule = { keyword: "grant", action: "ARCHIVE", level: "", flag: "" };
+  const log = JSON.stringify({ decision: "rejected", kind: "content", rule }) + "\nnot json\n" +
+              JSON.stringify({ decision: "approved", kind: "content", rule: { keyword: "x", action: "KEEP" } });
+  const rej = rejectedBefore(log);
+  assert.equal(rej.length, 1);
+  assert.ok(wasRejected(rej, "content", { ...rule, keyword: "Grant" }));
+  assert.ok(!wasRejected(rej, "content", { ...rule, action: "DELETE" }));
 });

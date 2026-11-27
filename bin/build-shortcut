@@ -34,7 +34,7 @@ CONFIG_FOLDER = {
 # The review page (docs/review.html on GitHub Pages). config.json "reviewUrl" overrides it for a fork.
 REVIEW_URL = "https://marcus-darden.github.io/inbox-triage/review.html"
 
-VERSION = "0.2.1"  # shown at the end of each report, so a run shows which Engine made it
+VERSION = "0.3.0"  # shown at the end of each report, so a run shows which Engine made it
 
 LEVELS = ["low", "moderate", "high", "confirmations"]
 DECISIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"]
@@ -75,6 +75,7 @@ TAG_MARK = "⟦TAG⟧"
 TAG_HINT_RE = r"^\s*([A-Za-z0-9_-]{1,24})\s*;[\s\S]*$"
 TAG_REST_RE = r"^\s*[A-Za-z0-9_-]{1,24}\s*;\s*([\s\S]*)$"
 LABELS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/labels"
+RULES_UPDATE = "RULES-UPDATE v1"  # the review page's rules.json update; docs/review.html writes the same header
 # The id of the label named like the tag, in any case (Gmail label names are case-insensitive).
 LABEL_ID_PREFIX = r'(?i)^[\s\S]*?"id":\s*"([^"]+)",\s*"name":\s*"'
 LABEL_ID_SUFFIX = r'"[\s\S]*$'
@@ -355,6 +356,23 @@ def load_review_config():
     b.end()
 
 
+def review_url(text_ref):
+    """Set ReviewURL: the review page with this text zipped (Make Archive) and base64url-encoded after '#v1.',
+    so it never reaches a server."""
+    arc = add("makezip", {"WFInput": attachment(text_ref), "WFZIPName": "report"}, "Archive")
+    enc = add("base64encode", {"WFInput": attachment(out(arc)), "WFEncodeMode": "Encode",
+                               "WFBase64LineBreakMode": "None"}, "Base64 Encoded")
+    r = replace(out(enc), "+", "-")
+    r = replace(out(r), "/", "_")
+    r = replace(out(r), "=", "")
+    set_text("ReviewURL", var("ReviewBase"), "#v1.", out(r))
+
+
+def open_review_url():
+    url = add("url", {"WFURLActionURL": text(var("ReviewURL"))}, "URL")
+    add("openurl", {"WFInput": attachment(out(url))})
+
+
 def show_report(title_ref, body_ref, allow_web_ref=None):
     """The report as a note and/or the review page, per ReviewUI. The page gets '# Title' plus the report,
     zipped (Make Archive) and base64url-encoded after '#v1.' in the link, so it never reaches a server."""
@@ -369,13 +387,7 @@ def show_report(title_ref, body_ref, allow_web_ref=None):
         b.end()
     b = if_text(as_text("ShowWeb"), IS, "yes")
     full = text_action("# ", title_ref, "\n\n", body_ref)
-    arc = add("makezip", {"WFInput": attachment(out(full)), "WFZIPName": "report"}, "Archive")
-    enc = add("base64encode", {"WFInput": attachment(out(arc)), "WFEncodeMode": "Encode",
-                               "WFBase64LineBreakMode": "None"}, "Base64 Encoded")
-    r = replace(out(enc), "+", "-")
-    r = replace(out(r), "/", "_")
-    r = replace(out(r), "=", "")
-    set_text("ReviewURL", var("ReviewBase"), "#v1.", out(r))
+    review_url(out(full))
     set_text("ReviewLink", "[Review and correct in the browser](", var("ReviewURL"), ")\n\n")
     save_file(out(text_action(var("ReviewURL"))), "EmailTriage/log/last-review-url.txt")
     b.end()
@@ -1124,6 +1136,16 @@ def apply_lines(body_name, item="Repeat Item"):
     ll.end()
 
 
+def open_proposals(proposals_ref):
+    """Open the review page in proposals mode: the proposals, the current rules.json and the decision log."""
+    rules_now = text_action(out(get_file("EmailTriage/rules.json")))
+    log = text_action(out(get_file("EmailTriage/feedback/rules-log.txt", required=False)))
+    bundle = text_action("# Proposed rules, ", var("NoteTime"), "\n=== proposals ===\n", proposals_ref,
+                         "\n=== rules ===\n", out(rules_now), "\n=== log ===\n", out(log), "\n")
+    review_url(out(bundle))
+    open_review_url()
+
+
 def finish_feedback():
     """Record corrections, ask for rule proposals, re-run the engine on forced ids, then mark them applied.
     The engine runs last and 'applied' is saved after it, so a failed run can simply be shared again."""
@@ -1136,6 +1158,9 @@ def finish_feedback():
     c = if_has_value(as_text("Corrections"))
     comment("Ask the model for rule changes from these corrections. They are only proposed, never applied.")
     rules_text = text_action(out(get_file("EmailTriage/rules.json")))
+    comment("Proposals you rejected on the review page (feedback/rules-log.txt) are not proposed again.")
+    rlog = text_action(out(get_file("EmailTriage/feedback/rules-log.txt", required=False)))
+    set_text("Rejected", out(regex_replace(out(rlog), r'(?m)^.*"decision": "approved".*$', "")))
     ask_text = text_action(
         "You maintain the email triage rules for the user. Below are the current rules (JSON) and corrections the user "
         "just made to the triage, each with the user's hint. Propose rule changes so that what each hint states "
@@ -1150,7 +1175,8 @@ def finish_feedback():
         '"content_rules": [{"keyword": "", "action": "", "level": "", "tag": "", "reason": "one line"}]}\n\n'
         "When a correction has a tag, put it in the rule's tag field: matching mail then gets that Gmail label. "
         "A TAG correction keeps the original action.\n\n"
-        "Current rules:\n", out(rules_text), "\n\nCorrections:\n", var("Corrections"))
+        "Current rules:\n", out(rules_text), "\n\nRejected before (never propose these again):\n",
+        var("Rejected"), "\n\nCorrections:\n", var("Corrections"))
     set_var("ModelStart", out(fmt_date("h:mm:ss a")))
     m = if_text(as_text("FeedbackModel"), IS, "apple")
     set_text("Reply", out(ask_model(out(ask_text), "Text")))
@@ -1195,6 +1221,12 @@ def finish_feedback():
                          "\n\n## Proposed rule changes (need your OK)\n\n", var("Proposals"))
     add("com.apple.mobilenotes.SharingExtension", {"name": text(var("Title")), "WFCreateNoteInput": text(out(report)),
                                                    "interpretAsMarkdown": True, "OpenWhenRun": True}, "Note")
+    c2 = if_text(as_text("Parsed"), IS, "yes")
+    c3 = if_text(as_text("ReviewUI"), IS_NOT, "notes")
+    comment("Approve or reject the proposals on the review page.")
+    open_proposals(var("Json"))
+    c3.end()
+    c2.end()
     c.otherwise()
     n_tagged = add("count", {"WFCountType": "Items", "Input": attachment(var("TaggedList")),
                              "WFInput": attachment(var("TaggedList"))}, "Count")
@@ -1222,20 +1254,27 @@ def build_front():
     for name in ("Ids", "Force", "Pending", "Done", "Corrections"):
         set_text(name, "")
     set_text("Input", {"Type": "ExtensionInput"})
+    comment("Rules approved on the review page come back as 'RULES-UPDATE v1 len=<n>' plus base64 lines.")
+    r0 = if_text(as_text("Input"), BEGINS_WITH, RULES_UPDATE)
+    set_text("Mode", "rules")
+    r0.otherwise()
     b = if_text(as_text("Input"), IS, "default")
     set_text("Mode", "default")
     b.otherwise()
     c = if_text(as_text("Input"), CONTAINS, "id:")
     set_text("Mode", "shared")
     c.otherwise()
-    m = Menu("Inbox Triage", ["Default", "Kept", "Custom", "Apply feedback (newest notes)", "Clean up old reports"])
-    for title, mode in [("Default", "default"), ("Kept", "kept"), ("Custom", "custom"),
-                        ("Apply feedback (newest notes)", "feedback"), ("Clean up old reports", "cleanup")]:
+    menu = [("Default", "default"), ("Kept", "kept"), ("Custom", "custom"),
+            ("Apply feedback (newest notes)", "feedback"), ("Review proposed rules", "proposals"),
+            ("Clean up old reports", "cleanup")]
+    m = Menu("Inbox Triage", [t for t, _ in menu])
+    for title, mode in menu:
         m.item(title)
         set_text("Mode", mode)
     m.end()
     c.end()
     b.end()
+    r0.end()
 
     b = if_text(as_text("Mode"), IS, "default")
     run_shortcut(ENGINE, out(dictionary([("label", ("",))])))
@@ -1338,6 +1377,62 @@ def build_front():
     apply_lines("NoteBody", item="Repeat Item 2")
     nl.end()
     finish_feedback()
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "proposals")
+    pending = text_action(out(get_file("EmailTriage/feedback/proposed-rules.txt", required=False)))
+    set_text("PendingRules", out(pending))
+    c = if_text(as_text("PendingRules"), CONTAINS, "_rules")
+    open_proposals(var("PendingRules"))
+    c.otherwise()
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+                  "WFAlertActionMessage": "No proposed rules are waiting."})
+    c.end()
+    b.end()
+
+    b = if_text(as_text("Mode"), IS, "rules")
+    comment("Write rules.json only if it arrived intact: the length matches and it looks like rules.json. "
+            "The old file is kept in feedback/, and the decisions go to feedback/rules-log.txt.")
+    set_text("RLen", out(regex_replace(var("Input"), r"^[^\n]* len=(\d+)[\s\S]*$", "$1")))
+    set_text("RB64", out(regex_replace(var("Input"), r"^[^\n]*\n([^\n]*)[\s\S]*$", "$1")))
+    set_text("LB64", out(regex_replace(var("Input"), r"^[^\n]*\n[^\n]*\n([^\n]*)[\s\S]*$", "$1")))
+    dec = add("base64encode", {"WFInput": attachment(as_text("RB64")), "WFEncodeMode": "Decode"}, "Base64 Encoded")
+    set_text("NewRules", out(dec))
+    n = add("count", {"WFCountType": "Characters", "Input": attachment(var("NewRules")),
+                      "WFInput": attachment(var("NewRules"))}, "Count")
+    set_text("NewLen", out(n))
+    set_text("Valid", "no")
+    c = if_text_var(as_text("NewLen"), IS, var("RLen"))
+    c2 = if_text(as_text("NewRules"), BEGINS_WITH, "{")
+    c3 = if_text(as_text("NewRules"), CONTAINS, '"rules"')
+    c4 = if_text(as_text("NewRules"), CONTAINS, '"content"')
+    set_text("Valid", "yes")
+    c4.end()
+    c3.end()
+    c2.end()
+    c.end()
+    c = if_text(as_text("Valid"), IS, "yes")
+    stamp = fmt_date("yyyyMMdd-HHmmss")
+    old_rules = text_action(out(get_file("EmailTriage/rules.json")))
+    save_file(out(old_rules), "EmailTriage/feedback/rules-backup-", out(stamp), ".txt")
+    named = add("setitemname", {"WFInput": attachment(out(text_action(var("NewRules")))),
+                                "WFName": text("rules.json")}, "Renamed Item")
+    save_file(out(named), "EmailTriage/rules.json")
+    ldec = add("base64encode", {"WFInput": attachment(as_text("LB64")), "WFEncodeMode": "Decode"},
+               "Base64 Encoded")
+    old_log = text_action(out(get_file("EmailTriage/feedback/rules-log.txt", required=False)))
+    save_file(out(text_action(out(old_log), out(ldec))), "EmailTriage/feedback/rules-log.txt")
+    save_file(out(text_action("No pending proposals.\n")), "EmailTriage/feedback/proposed-rules.txt")
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+                  "WFAlertActionMessage": text("Rules updated. The previous rules.json is in feedback/rules-backup-",
+                                               out(stamp), ".txt, and your decisions are in "
+                                               "feedback/rules-log.txt.")})
+    c.otherwise()
+    add("alert", {"WFAlertActionTitle": "Inbox Triage", "WFAlertActionCancelButtonShown": False,
+                  "WFAlertActionMessage": text("Rules not changed: the update from the review page didn't arrive "
+                                               "intact (expected ", var("RLen"), " characters, got ", var("NewLen"),
+                                               "). Open Review proposed rules and save again.")})
+    c.end()
     b.end()
 
     b = if_text(as_text("Mode"), IS, "cleanup")

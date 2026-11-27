@@ -54,7 +54,7 @@ flowchart LR
   MAC -->|"approved rules"| CF
 ```
 
-1. **InboxTriage** is what you run. It shows a menu (Default, Kept, Custom, Apply feedback, Clean up old reports). A time-of-day automation runs it with the input `default`, which skips the menu.
+1. **InboxTriage** is what you run. It shows a menu (Default, Kept, Custom, Apply feedback, Review proposed rules, Clean up old reports). A time-of-day automation runs it with the input `default`, which skips the menu.
 2. **InboxTriage Engine** lists up to 25 inbox messages older than `ignoreHours`, skipping ones already marked Kept. For each message:
    - **Rules first.** Sender rules (from address, optionally with a subject) and content keyword rules from `rules.json`.
    - **Then the model.** Apple's on-device model, with prompts read from iCloud Drive at run time. Low confidence, IMPORTANT and STARRED mean the message is kept.
@@ -70,7 +70,7 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Keep on doubt.** Low model confidence, IMPORTANT or STARRED labels, an unreadable message, or unparseable model output all mean KEEP.
 - **Reversible.** Every change also adds the Gmail label `AutoTriage` (search `label:AutoTriage` to undo), and Trash keeps mail for 30 days.
 - **Unsubscribe is narrow.** It only sends the standard RFC 8058 one-click POST, never with your Gmail token. For mailto-only lists it creates a Gmail **draft** that you send yourself. It never opens other links.
-- **People stay in charge of rules.** Model-proposed rule changes are saved for review. `bin/learn --apply` only runs after you approve them.
+- **People stay in charge of rules.** Model-proposed rule changes are only proposals: you approve or reject each one on the review page (or with `bin/learn` on the Mac). The old `rules.json` is backed up before every change.
 - **Private by default.** Classification and summaries run on the phone. Secrets live in iCloud Drive, not in the shortcuts or this repo (see [SECURITY.md](SECURITY.md)).
 
 ## The feedback loop

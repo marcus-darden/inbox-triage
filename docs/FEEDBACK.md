@@ -53,16 +53,27 @@ In Notes: **Share > InboxTriage**. For each tagged line, the shortcut:
 
 Steps 1 and 2 come before the Engine run and step 4 after it, so a failed run can simply be shared again.
 
-## 3. Learn: approve rule changes on the Mac
+## 3. Approve rule changes on the phone
+
+After Apply feedback, the review page opens again in **proposals** mode (also from the menu: **Review proposed rules**). Each proposal is a card: the rule in plain English, the hint it came from, and what it replaces or "New rule". Tap Approve or Reject, then **Save**. The page builds the new `rules.json` (JavaScript validates every proposal: known action, a level for SUMMARIZE, a valid tag, a `from` or `keyword`) and hands it to InboxTriage as `RULES-UPDATE v1 len=<n>` plus base64 lines. InboxTriage writes it only if the length matches and it looks like rules.json, after saving the old file as `feedback/rules-backup-<time>.txt`. Every decision is appended to `feedback/rules-log.txt`, and the pending proposals are cleared. Rejected proposals are hidden on the page and listed to Locally AI as "never propose again". Nothing is applied without your Approve.
+
+A new rule is added last and overrides broader rules for its own address (the last match wins); only a rule with the same address and subject, or the same keyword, is replaced.
+
+The update rides in a `shortcuts://` link, so it is limited by URL length; a rules.json of a few hundred rules (tens of kilobytes) fits.
+
+## 4. Learn: rule changes on the Mac
 
 ```sh
 bin/learn            # proposal only: a diff of rules.json, plus what needs a person
 bin/learn --apply    # after you approve: write local/rules.json, deploy, clear pending.tsv
+bin/deploy --pull-rules   # bring rules approved on the phone into local/ (bin/learn and bin/deploy do this first)
 ```
+
+`bin/deploy` and `bin/learn` first pull a `rules.json` changed on the phone into `local/` (and commit it there). `local/.deployed-rules.sha` records what was last deployed; if both the phone and `local/` changed, `bin/deploy` stops instead of overwriting either.
 
 How `bin/learn` proposes (tested in `tests/test_learn.py`):
 
-- A sender whose corrections all agree becomes a sender rule. It replaces any broader rule that matched the same address, but keeps subject-specific rules.
+- A sender whose corrections all agree becomes a sender rule, added last so it overrides broader rules (last match wins) for that address only. A rule for the same address and subject is replaced.
 - A single KEEP (an "undo") is usually about that one message, so a sender needs two before it becomes a KEEP rule.
 - Conflicting corrections, RELEASE, and anything without a sender address are listed for a person. Those usually become a content rule or a prompt tweak in `prompts/content-rules.txt`.
 - The model's proposals are shown next to the diff for comparison.

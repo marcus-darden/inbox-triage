@@ -58,7 +58,7 @@
 <header>
   <h1 id="title">Inbox Triage review</h1>
   <div id="summary" class="muted"></div>
-  <div class="muted">A correction without a hint changes that message only. Add a hint if you want it to become a rule. Start a hint with a tag and a semicolon (LoR; student asking for a letter) to add that Gmail label.</div>
+  <div id="help" class="muted">A correction without a hint changes that message only. Add a hint if you want it to become a rule. Start a hint with a tag and a semicolon (LoR; student asking for a letter) to add that Gmail label.</div>
   <div id="error"></div>
 </header>
 <main id="cards"></main>
@@ -189,6 +189,133 @@ function submitUrl(title, choices) {
   return RETURN_URL + encodeURIComponent(submitText(title, choices));
 }
 
+// ---- proposed rules (tested in tests/review.test.mjs; apply logic mirrors bin/learn's apply_rule) ----
+
+const ACTIONS = ["KEEP", "ARCHIVE", "DELETE", "UNSUBSCRIBE", "SUMMARIZE"];
+const LEVELS = ["low", "moderate", "high", "confirmations"];
+const TAG_NAME_RE = /^[A-Za-z0-9_-]{1,24}$/;
+const RULES_UPDATE = "RULES-UPDATE v1";
+
+function isProposals(text) {
+  return /^=== proposals ===$/m.test(text) && /^=== rules ===$/m.test(text);
+}
+
+// "=== proposals ===\n…\n=== rules ===\n…\n=== log ===\n…" → {title, proposals, rules, log}
+function splitBundle(text) {
+  const part = (name) => {
+    const m = new RegExp("^=== " + name + " ===\\n([\\s\\S]*?)(?=^=== \\w+ ===$|(?![\\s\\S]))", "m").exec(text);
+    return m ? m[1].trim() : "";
+  };
+  const title = /^# (.*)$/m.exec(text);
+  return { title: title ? title[1] : "Proposed rules", proposals: part("proposals"), rules: part("rules"),
+           log: part("log") };
+}
+
+function firstJson(text) {
+  const t = (text || "").replace(/```(?:json)?/g, "");
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  if (a < 0 || b <= a) throw new Error("no JSON object");
+  return JSON.parse(t.slice(a, b + 1));
+}
+
+// A proposal as a rules.json rule, or an error string. kind: "sender" or "content".
+function normalize(kind, p) {
+  if (!p || typeof p !== "object") return "not an object";
+  const s = (v) => (typeof v === "string" ? v.trim() : "");
+  const action = s(p.action).toUpperCase(), level = s(p.level).toLowerCase(), tag = s(p.tag);
+  if (!ACTIONS.includes(action)) return "unknown action '" + s(p.action) + "'";
+  if (action === "SUMMARIZE" && !LEVELS.includes(level)) return "SUMMARIZE needs a level";
+  if (tag && !TAG_NAME_RE.test(tag)) return "bad tag '" + tag + "'";
+  const rule = kind === "sender" ? { from: s(p.from), subject: s(p.subject) } : { keyword: s(p.keyword) };
+  if (kind === "sender" && rule.from.length < 3) return "sender rule without 'from'";
+  if (kind === "content" && rule.keyword.length < 3) return "content rule without 'keyword'";
+  Object.assign(rule, { action, level: action === "SUMMARIZE" ? level : "", flag: "" });
+  if (tag) rule.tag = tag;
+  return rule;
+}
+
+// Locally AI's reply → [{kind, rule, reason}] plus [{kind, raw, error}] for proposals that can't be used.
+function parseProposals(text) {
+  const out = { ok: [], bad: [] };
+  let j;
+  try { j = firstJson(text); } catch (e) { out.bad.push({ kind: "", raw: text, error: e.message }); return out; }
+  for (const [key, kind] of [["sender_rules", "sender"], ["content_rules", "content"]]) {
+    for (const p of Array.isArray(j[key]) ? j[key] : []) {
+      const r = normalize(kind, p);
+      if (typeof r === "string") out.bad.push({ kind, raw: JSON.stringify(p), error: r });
+      else out.ok.push({ kind, rule: r, reason: typeof p.reason === "string" ? p.reason : "" });
+    }
+  }
+  return out;
+}
+
+function sameRule(kind, a, b) {
+  const lc = (v) => (v || "").toLowerCase();
+  if (kind === "content") return lc(a.keyword) === lc(b.keyword);
+  return lc(a.from) === lc(b.from) && lc(a.subject) === lc(b.subject);
+}
+
+// Rules a new rule replaces: the same keyword, or the same from and subject (as bin/learn's apply_rule does).
+// Broader rules stay: the new rule comes last and the last match wins, so it overrides them for its address only.
+function replaced(rules, kind, rule) {
+  const list = kind === "content" ? rules.content || [] : rules.rules || [];
+  return list.filter((r) => sameRule(kind, r, rule));
+}
+
+function applyRules(rules, approved) {
+  const out = JSON.parse(JSON.stringify(rules));
+  out.rules = out.rules || [];
+  out.content = out.content || [];
+  for (const { kind, rule } of approved) {
+    const key = kind === "content" ? "content" : "rules";
+    const gone = replaced(out, kind, rule);
+    out[key] = out[key].filter((r) => !gone.includes(r)).concat([rule]);
+  }
+  return out;
+}
+
+function ruleText(kind, r) {
+  const what = r.action === "SUMMARIZE" ? "summarize (" + r.level + ")" : r.action.toLowerCase();
+  const when = kind === "content" ? "Subject or preview contains “" + r.keyword + "”"
+    : "Mail from " + r.from + (r.subject ? " with subject containing “" + r.subject + "”" : "");
+  return when + " → " + what + (r.tag ? ", label #" + r.tag : "");
+}
+
+// JSON with every non-ASCII character escaped, so the shortcut's character count matches ours.
+function asciiJson(obj) {
+  return JSON.stringify(obj, null, 2).replace(/[\u007f-￿]/g,
+    (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
+function b64(text) {
+  return btoa(text);   // text is ASCII (asciiJson / ASCII log lines)
+}
+
+// The text InboxTriage receives: header with the length, then base64 of the new rules.json and of the log.
+function rulesUpdateText(newRules, logLines) {
+  const json = asciiJson(newRules) + "\n";
+  const log = logLines.map((l) => asciiJson(l).replace(/\n\s*/g, " ")).join("\n") + "\n";
+  return RULES_UPDATE + " len=" + json.length + "\n" + b64(json) + "\n" + b64(log) + "\n";
+}
+
+function rulesUpdateUrl(newRules, logLines) {
+  return RETURN_URL + encodeURIComponent(rulesUpdateText(newRules, logLines));
+}
+
+// Proposals rejected before (rules-log.txt lines with "decision": "rejected") don't come back.
+function rejectedBefore(log) {
+  const out = [];
+  for (const line of (log || "").split("\n")) {
+    try { const j = JSON.parse(line); if (j.decision === "rejected" && j.rule) out.push(j); } catch (e) { /* skip */ }
+  }
+  return out;
+}
+
+function wasRejected(rejected, kind, rule) {
+  return rejected.some((j) => j.kind === kind && sameRule(kind, j.rule, rule) && j.rule.action === rule.action &&
+                              (j.rule.level || "") === (rule.level || "") && (j.rule.tag || "") === (rule.tag || ""));
+}
+
 // ---- page ----
 
 function boot() {
@@ -289,8 +416,71 @@ function boot() {
     $("submit").textContent = "Sent " + choices.length + " at " + new Date().toLocaleTimeString() + ". Submit again";
   };
 
+  function renderProposals(bundle) {
+    $("help").hidden = true;
+    $("title").textContent = bundle.title;
+    document.title = bundle.title;
+    let rules;
+    try { rules = firstJson(bundle.rules); } catch (e) { $("error").textContent = "Couldn't read rules.json: " + e.message; return; }
+    const parsed = parseProposals(bundle.proposals);
+    const rejected = rejectedBefore(bundle.log);
+    const fresh = parsed.ok.filter((p) => !wasRejected(rejected, p.kind, p.rule));
+    const skipped = parsed.ok.length - fresh.length;
+    $("summary").textContent = fresh.length + " proposed rule" + (fresh.length === 1 ? "" : "s") +
+      (skipped ? ", " + skipped + " hidden because you rejected them before" : "") +
+      ". Nothing changes until you approve and save.";
+    const decided = new Map();   // index -> "approved" | "rejected"
+    const main = $("cards");
+    fresh.forEach((p, i) => {
+      const c = el("div", "card");
+      c.append(el("div", "who", p.kind === "content" ? "Content rule" : "Sender rule"), el("div", "", ruleText(p.kind, p.rule)));
+      if (p.reason) c.append(el("div", "meta", "From your hint: " + p.reason));
+      const old = replaced(rules, p.kind, p.rule);
+      c.append(el("div", "sum", old.length ? "Replaces: " + old.map((r) => ruleText(p.kind, r)).join("; ") : "New rule"));
+      const row = el("div", "row");
+      for (const [label, value] of [["Approve", "approved"], ["Reject", "rejected"]]) {
+        const b = el("button", "", label);
+        b.type = "button";
+        b.onclick = () => {
+          if (decided.get(i) === value) decided.delete(i); else decided.set(i, value);
+          row.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
+          if (decided.get(i) === value) b.classList.add("on");
+          c.classList.toggle("set", decided.has(i));
+          const n = decided.size;
+          $("submit").textContent = "Save " + n + " decision" + (n === 1 ? "" : "s");
+          $("submit").disabled = n === 0;
+        };
+        row.append(b);
+      }
+      c.append(row);
+      main.append(c);
+    });
+    if (parsed.bad.length) {
+      const d = el("details");
+      d.append(el("summary", "", parsed.bad.length + " proposal(s) couldn't be used"),
+               document.createTextNode(parsed.bad.map((b) => b.error + ": " + b.raw).join("\n")));
+      main.append(d);
+    }
+    $("submit").textContent = "Save 0 decisions";
+    $("submit").onclick = () => {
+      if (!decided.size) return;
+      const time = new Date().toISOString();
+      const approved = [], log = [];
+      for (const [i, decision] of decided) {
+        const p = fresh[i];
+        if (decision === "approved") approved.push(p);
+        log.push({ time, decision, kind: p.kind, rule: p.rule, reason: p.reason });
+      }
+      location.href = rulesUpdateUrl(applyRules(rules, approved), log);
+      $("submit").textContent = "Sent at " + new Date().toLocaleTimeString() + ". Save again";
+    };
+  }
+
   decodePayload(location.hash)
-    .then((text) => { report = parseReport(text); render(); update(); })
+    .then((text) => {
+      if (isProposals(text)) { renderProposals(splitBundle(text)); return; }
+      report = parseReport(text); render(); update();
+    })
     .catch((e) => { $("error").textContent = "Couldn't read the report: " + e.message +
                     ". Open this page from the Inbox Triage shortcut."; });
 }

@@ -9,6 +9,36 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 dest="${INBOX_TRIAGE_DEST:-$HOME/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/EmailTriage}"
+localdir="${INBOX_TRIAGE_LOCAL:-$repo/local}"
+
+# rules.json can change in two places: local/ (bin/learn, an editor) and iCloud (rules approved on the
+# review page). local/.deployed-rules.sha remembers what was last deployed, so a phone change is pulled into
+# local/ (and committed there when local/ is a git repo) instead of being overwritten. If both changed, stop.
+sha() { shasum -a 256 < "$1" | cut -c1-64; }
+pull_rules() {
+  local icloud="$dest/rules.json" mine="$localdir/rules.json" mark="$localdir/.deployed-rules.sha"
+  [ -f "$icloud" ] && [ -f "$mine" ] || return 0
+  command -v brctl >/dev/null && brctl download "$icloud" >/dev/null 2>&1 || true
+  local ih lh last
+  ih="$(sha "$icloud")"; lh="$(sha "$mine")"; last="$(cat "$mark" 2>/dev/null || true)"
+  if [ "$ih" = "$lh" ]; then echo "$lh" > "$mark"; return 0; fi
+  if [ -n "$last" ] && [ "$ih" = "$last" ]; then return 0; fi          # only local/ changed: deploy it
+  if [ -n "$last" ] && [ "$lh" = "$last" ]; then                       # only the phone changed: pull it
+    cp "$icloud" "$mine"
+    echo "$ih" > "$mark"
+    if git -C "$localdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$localdir" add rules.json && git -C "$localdir" commit -q -m "rules.json: rules approved on the phone" || true
+    fi
+    echo "Pulled rules.json from iCloud (approved on the phone) into $mine."
+    return 0
+  fi
+  echo "rules.json differs between iCloud and $mine, and it isn't clear which is newer." >&2
+  echo "Compare: diff \"$icloud\" \"$mine\"" >&2
+  echo "Keep one by copying it over the other, then run bin/deploy again." >&2
+  exit 1
+}
+pull_rules
+[ "${1:-}" = "--pull-rules" ] && exit 0
 mkdir -p "$dest/prompts" "$dest/log" "$dest/feedback"
 
 # place <personal file> <example file> <destination>
@@ -21,11 +51,12 @@ place() {
   fi
 }
 
-place "$repo/local/config.json" "$repo/icloud/config.example.json" "$dest/config.json"
-place "$repo/local/rules.json" "$repo/icloud/rules.example.json" "$dest/rules.json"
+place "$localdir/config.json" "$repo/icloud/config.example.json" "$dest/config.json"
+place "$localdir/rules.json" "$repo/icloud/rules.example.json" "$dest/rules.json"
+[ -f "$localdir/rules.json" ] && sha "$localdir/rules.json" > "$localdir/.deployed-rules.sha"
 for f in "$repo"/icloud/prompts/*.txt; do
   name="$(basename "$f")"
-  place "$repo/local/prompts/$name" "$f" "$dest/prompts/$name"
+  place "$localdir/prompts/$name" "$f" "$dest/prompts/$name"
 done
 
 # Files the shortcuts read at run time: create them empty if missing, never overwrite.

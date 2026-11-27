@@ -38,8 +38,9 @@ A report note shared to InboxTriage, or the review page's Submit, arrives as tex
 2. Ask **Locally AI** (Ternary Bonsai 2 9B, a local model) for proposed sender and content rules, given the corrections, your hints and the current `rules.json`. The reply is shape-checked with patterns only and saved to `feedback/proposed-rules.txt`. It is never applied.
 3. Run the Engine on just those ids with the decisions you chose.
 4. Mark them in `feedback/applied.txt`, so sharing the same note again does nothing.
+5. Open the review page in proposals mode with the proposals, the current `rules.json` and `feedback/rules-log.txt`. Approved rules come back as `RULES-UPDATE v1 len=<n>`, base64 `rules.json`, base64 log lines; InboxTriage checks the length and shape, backs up the old file to `feedback/rules-backup-<time>.txt`, and writes `rules.json`. This is the only place a shortcut writes `rules.json`.
 
-`bin/learn` (Mac) reads `pending.tsv`, looks up sender addresses in Gmail, and proposes a reviewed diff of `rules.json`. `--apply` writes `local/rules.json` and deploys.
+`bin/deploy --pull-rules` brings phone-approved rules into `local/` before anything deploys. `bin/learn` (Mac) reads `pending.tsv`, looks up sender addresses in Gmail, and proposes a reviewed diff of `rules.json`. `--apply` writes `local/rules.json` and deploys.
 
 ## Files
 

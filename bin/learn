@@ -99,6 +99,23 @@ def to_rule(corrected, original="", tag=""):
     return parts[0], (parts[1] if len(parts) > 1 else ""), tag
 
 
+def apply_rule(rules, kind, rule):
+    """Add a rule to rules (in place), replacing a rule for the same keyword, or the same from and subject.
+    Broader rules stay: the new rule comes last, and the last match wins, so it overrides them for its own
+    address only. docs/review.html applies approved proposals the same way (tests/test_review_roundtrip.py)."""
+    key = "content" if kind == "content" else "rules"
+
+    def lc(v):
+        return (v or "").lower()
+
+    def superseded(r):
+        if kind == "content":
+            return lc(r.get("keyword")) == lc(rule.get("keyword"))
+        return lc(r.get("from")) == lc(rule.get("from")) and lc(r.get("subject")) == lc(rule.get("subject"))
+
+    rules[key] = [r for r in rules.get(key, []) if not superseded(r)] + [rule]
+
+
 def unique_rows(rows):
     """Valid pending rows, keeping the first of each (id, correction): a note may be shared twice."""
     seen, unique = set(), []
@@ -134,16 +151,16 @@ def propose(rows, rules, lookup):
         if action == "KEEP" and len(items) < 2:
             manual += [(addr, o, c, line) for o, c, line in items]
             continue
-        # Replace any sender rule (without a subject condition) that already matches this address.
-        rules["rules"] = [r for r in rules["rules"] if r.get("subject") or r["from"].lower() not in addr]
         rule = {"from": addr, "subject": "", "action": action, "level": level, "flag": ""}
         if tag:
             rule["tag"] = tag
-        rules["rules"].append(rule)
+        apply_rule(rules, "sender", rule)
     return rules, manual, len(by_sender)
 
 
 def main():
+    # Rules approved on the phone (review page) land in iCloud: bring them into local/ first.
+    subprocess.run([os.path.join(REPO, "bin", "deploy"), "--pull-rules"], check=True)
     if not os.path.exists(PENDING):
         sys.exit("No feedback yet (pending.tsv not found).")
     rows = unique_rows([line.split("\t") for line in read_icloud(PENDING).splitlines() if line.strip()])

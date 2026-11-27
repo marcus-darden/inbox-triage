@@ -28,11 +28,12 @@ def test_duplicates_from_sharing_twice_are_dropped(learn):
     assert len(learn.unique_rows(rows)) == 1
 
 
-def test_consistent_sender_becomes_a_rule_and_replaces_the_old_one(learn):
+def test_consistent_sender_becomes_a_rule_that_overrides_the_broader_one(learn):
     rules, manual, senders = propose(learn, [row("m1", "UNSUBSCRIBE", "SUMMARIZE low"),
                                              row("m2", "UNSUBSCRIBE", "SUMMARIZE low")])
     froms = {r["from"]: r for r in rules["rules"]}
-    assert "@deals.example.com" not in froms                     # old broader rule replaced
+    assert "@deals.example.com" in froms                         # broader rule kept for other senders
+    assert rules["rules"][-1]["from"] == "promo@deals.example.com"  # last match wins
     assert froms["promo@deals.example.com"]["action"] == "SUMMARIZE"
     assert froms["promo@deals.example.com"]["level"] == "low"
     assert not manual and senders == 1

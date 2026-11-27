@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.3.0 (unreleased)
+
+- Approve rules on the phone: after Apply feedback (or from the menu's Review proposed rules), the review page shows each proposed rule with its hint and what it replaces, with Approve/Reject. Saving sends the new rules.json to InboxTriage, which checks its length and shape, backs up the old file in `feedback/`, writes it, and logs every decision in `feedback/rules-log.txt`. Rejected proposals don't come back.
+- New rules no longer remove broader rules; they are added last and override them for their own address (last match wins), in both bin/learn and the page.
+- `bin/deploy` and `bin/learn` pull phone-approved rules into `local/` first and stop if both sides changed.
+
+## 0.2.0
 
 - Review page: after a Default or Kept run, the Engine opens `docs/review.html` (GitHub Pages) in the browser with the run's report zipped and base64url-encoded after `#v1.` in the link, so it never reaches a server. Each message is a card with decision buttons and a hint field. Submit runs InboxTriage with the corrections as tagged report lines, the same format and parser as a shared note.
 - `reviewUI` config: `"both"` (default: page and note), `"web"` or `"notes"`. `reviewUrl` points a fork at its own page. The note starts with a link to the page.

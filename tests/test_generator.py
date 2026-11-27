@@ -9,7 +9,7 @@ KNOWN_ACTIONS = {
         "conditional", "count", "detect.dictionary", "detect.text", "dictionary", "documentpicker.open",
         "documentpicker.save", "downloadurl", "exit", "filter.notes", "format.date", "getrichtextfromhtml",
         "gettext", "getvalueforkey", "notification", "output", "repeat.each", "runworkflow", "setvariable",
-        "text.replace", "text.split", "urlencode", "ask", "adjustdate", "makezip", "openurl", "url",
+        "text.replace", "text.split", "urlencode", "ask", "adjustdate", "makezip", "openurl", "url", "setitemname",
     ]
 } | {
     "com.apple.mobilenotes.SharingExtension",       # Create Note
@@ -236,3 +236,31 @@ def test_note_text_has_no_bare_at_signs(shortcuts, name, variables):
             refs = p["WFInput"]["Value"]["attachmentsByRange"].values()
             replaced |= {r.get("VariableName") for r in refs}
     assert variables <= replaced
+
+
+def test_rules_update_is_checked_before_feedback_input(shortcuts):
+    """A rules update from the review page must not be read as feedback (its text could contain 'id:')."""
+    acts = actions_of(shortcuts, "InboxTriage")
+    conds = [a["WFWorkflowActionParameters"] for a in acts if a["WFWorkflowActionIdentifier"].endswith("conditional")
+             and a["WFWorkflowActionParameters"].get("WFControlFlowMode") == 0]
+    order = [p.get("WFConditionalActionString") for p in conds
+             if p.get("WFConditionalActionString") in ("RULES-UPDATE v1", "default", "id:")]
+    assert order[:3] == ["RULES-UPDATE v1", "default", "id:"]
+
+
+def test_rules_json_is_written_only_after_a_backup_and_as_a_named_file(shortcuts):
+    """rules.json is the Engine's input: back it up first, and name the file (iOS saves bare text as .txt)."""
+    acts = actions_of(shortcuts, "InboxTriage")
+    saves = [(i, a["WFWorkflowActionParameters"]["WFFileDestinationPath"]["Value"]["string"])
+             for i, a in enumerate(acts) if a["WFWorkflowActionIdentifier"].endswith("documentpicker.save")]
+    rules = [i for i, path in saves if path == "EmailTriage/rules.json"]
+    backup = [i for i, path in saves if path.startswith("EmailTriage/feedback/rules-backup-")]
+    assert len(rules) == 1 and backup and backup[0] < rules[0]
+    named = acts[rules[0] - 1]
+    assert named["WFWorkflowActionIdentifier"].endswith("setitemname")
+    assert named["WFWorkflowActionParameters"]["WFName"]["Value"]["string"] == "rules.json"
+    for name in NAMES[:2]:  # only InboxTriage writes rules.json
+        for a in actions_of(shortcuts, name):
+            if a["WFWorkflowActionIdentifier"].endswith("documentpicker.save"):
+                assert a["WFWorkflowActionParameters"]["WFFileDestinationPath"]["Value"]["string"] != \
+                    "EmailTriage/rules.json"
